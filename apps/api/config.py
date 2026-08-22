@@ -56,9 +56,17 @@ class Settings(BaseSettings):
     # Gateway policy knobs
     step_up_ttl_seconds: int = 900
     auto_strip_max_fraction: float = 0.10
-    behaviour_max_req_per_sec: float = 5.0
     velocity_max_txn_per_hour: int = 3
     velocity_max_txn_per_day: int = 10
+    replay_guard_ttl_seconds: int = 86_400
+
+    # S3 behaviour-stage thresholds
+    behaviour_max_req_per_sec: float = 5.0
+    behaviour_burst_window_seconds: float = 10.0
+    behaviour_probe_window_seconds: float = 300.0
+    behaviour_probe_min_quotes: int = 5
+    behaviour_loop_min_repeats: int = 3
+    behaviour_event_stream_maxlen: int = 500
 
     # Crypto
     ledger_signing_key_path: str = ".keys/ledger_ed25519.pem"

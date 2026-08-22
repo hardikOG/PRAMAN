@@ -13,10 +13,19 @@ works at all. Phase 6 inserts the PRAMAN gateway's `/authorize` call between
 quote confirmation and order creation; this function is exactly where that
 call will be added, noted so the later change doesn't surprise anyone
 re-reading this file.
+
+`request_quote` and `submit_cart` gained an `agent_id` parameter in Phase 4
+(not present in Phase 3): S3's price-probe and repeated-cart-loop signals
+need to attribute quote/purchase activity to a calling agent, and there is
+no other channel this MCP server has for caller identity yet.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
+from apps.api.config import get_settings
+from apps.api.gateway.behaviour_events import cart_signature, record_agent_event
 from apps.api.payments import get_payment_executor
 from apps.api.redis_client import get_redis
 from apps.mcp_storefront.catalog import get_product as _get_product
@@ -56,7 +65,7 @@ async def get_product(sku: str) -> dict:
     return product.model_dump()
 
 
-async def request_quote(items: list[dict]) -> dict:
+async def request_quote(agent_id: str, items: list[dict]) -> dict:
     """Price a set of `{"sku": ..., "qty": ...}` items, returning a quote id
     valid for 15 minutes.
     """
@@ -65,20 +74,41 @@ async def request_quote(items: list[dict]) -> dict:
     except (KeyError, TypeError, ValueError):
         return {"error": "each item must be {'sku': str, 'qty': int}"}
 
+    redis = get_redis()
+    settings = get_settings()
+    await record_agent_event(
+        redis,
+        agent_id,
+        "quote_requested",
+        datetime.now(UTC),
+        cart_signature=cart_signature(pairs),
+        maxlen=settings.behaviour_event_stream_maxlen,
+    )
+
     try:
-        quote = await _request_quote(get_redis(), merchant_id="kicks-co", skus_and_quantities=pairs)
+        quote = await _request_quote(redis, merchant_id="kicks-co", skus_and_quantities=pairs)
     except UnknownSkuError as exc:
         return {"error": str(exc)}
     return quote.model_dump(mode="json")
 
 
-async def submit_cart(quote_id: str) -> dict:
+async def submit_cart(agent_id: str, quote_id: str) -> dict:
     """Submit a previously requested quote for payment, returning the
     Razorpay (or deterministic) order id.
     """
-    quote = await get_quote(get_redis(), quote_id)
+    redis = get_redis()
+    quote = await get_quote(redis, quote_id)
     if quote is None:
         return {"error": f"quote not found or expired: {quote_id}"}
+
+    await record_agent_event(
+        redis,
+        agent_id,
+        "cart_submitted",
+        datetime.now(UTC),
+        cart_signature=cart_signature([(item.sku, item.qty) for item in quote.items]),
+        maxlen=get_settings().behaviour_event_stream_maxlen,
+    )
 
     executor = get_payment_executor()
     order = await executor.create_order(

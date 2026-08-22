@@ -42,29 +42,46 @@ async def test_get_product_reports_unknown_sku(wired) -> None:
 
 
 async def test_request_quote_then_submit_cart_creates_an_order(wired) -> None:
-    quote = await tools.request_quote(items=[{"sku": "NR-A9", "qty": 1}])
+    quote = await tools.request_quote("agent-1", items=[{"sku": "NR-A9", "qty": 1}])
     assert "error" not in quote
     assert quote["total_paise"] == 349_900
 
-    order = await tools.submit_cart(quote["id"])
+    order = await tools.submit_cart("agent-1", quote["id"])
     assert "error" not in order
     assert order["order_id"].startswith("order_det_")
     assert order["total_paise"] == 349_900
 
 
 async def test_submit_cart_reports_unknown_quote(wired) -> None:
-    result = await tools.submit_cart("does-not-exist")
+    result = await tools.submit_cart("agent-1", "does-not-exist")
     assert "error" in result
 
 
 async def test_request_quote_rejects_unknown_sku(wired) -> None:
-    result = await tools.request_quote(items=[{"sku": "NOT-REAL", "qty": 1}])
+    result = await tools.request_quote("agent-1", items=[{"sku": "NOT-REAL", "qty": 1}])
     assert "error" in result
 
 
 async def test_get_order_status_end_to_end(wired) -> None:
-    quote = await tools.request_quote(items=[{"sku": "SP-BLK", "qty": 1}])
-    order = await tools.submit_cart(quote["id"])
+    quote = await tools.request_quote("agent-1", items=[{"sku": "SP-BLK", "qty": 1}])
+    order = await tools.submit_cart("agent-1", quote["id"])
 
     status = await tools.get_order_status(order["order_id"])
     assert status["status"] == "created"
+
+
+async def test_quote_and_submit_both_record_behaviour_events(wired) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from apps.api.gateway.behaviour_events import get_recent_events
+
+    quote = await tools.request_quote("agent-2", items=[{"sku": "NR-A9", "qty": 1}])
+    await tools.submit_cart("agent-2", quote["id"])
+
+    redis = tools.get_redis()
+    events = await get_recent_events(
+        redis, "agent-2", since=datetime.now(UTC) - timedelta(minutes=1)
+    )
+    event_types = {e.event_type for e in events}
+    assert "quote_requested" in event_types
+    assert "cart_submitted" in event_types
