@@ -1,0 +1,97 @@
+[project]
+name = "praman"
+version = "0.1.0"
+description = "PRAMAN — verifiable authorization for agent-initiated payments"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+# Runtime dependencies. The container image (docker/Dockerfile.api) installs
+# these from requirements.txt, which is kept in sync with this list.
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "aiosqlite>=0.20",
+    "alembic>=1.14",
+    "redis>=5.2",
+    "cryptography>=44.0",
+    "httpx>=0.28",
+    "structlog>=24.4",
+    "python-dotenv>=1.0",
+    "anthropic>=0.40",
+    "razorpay>=1.4",
+    "mcp>=1.1",
+    "pyyaml>=6.0",
+    "typer>=0.15",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "hypothesis>=6.122",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "types-pyyaml",
+    "types-redis",
+    "fakeredis>=2.26",
+]
+
+[project.scripts]
+praman = "apps.api.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# The monorepo exposes three top-level import roots.
+packages = ["apps", "agents", "eval"]
+
+# ── Ruff ──────────────────────────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["apps", "agents", "eval", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM", "PTH", "RUF"]
+ignore = [
+    "B008",   # FastAPI Depends() in defaults is idiomatic
+    "RUF001", # ambiguous unicode (₹, प्रमाण) is intentional in this project
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+
+# ── Mypy ──────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# Third-party packages without bundled type stubs.
+module = ["razorpay.*", "mcp.*"]
+ignore_missing_imports = true
+
+# ── Pytest ────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

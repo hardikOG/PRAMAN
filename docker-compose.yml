@@ -1,0 +1,128 @@
+# PRAMAN — one stack, six services.
+# Host ports are deliberately non-default across the board (5434/6381/8010/
+# 8011/5174) — this dev machine has native Postgres and Redis processes AND
+# other Docker Compose projects already squatting the more obvious choices
+# (5432, 5433, 6379, 6380, 8000); verified free with Get-NetTCPConnection
+# before picking these. Internal container-to-container traffic (DATABASE_URL,
+# REDIS_URL below) is unaffected — only the host-side mappings differ.
+
+name: praman
+
+x-api-env: &api-env
+  PRAMAN_ENV: ${PRAMAN_ENV:-local}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-praman}:${POSTGRES_PASSWORD:-praman}@postgres:5432/${POSTGRES_DB:-praman}
+  REDIS_URL: redis://redis:6379/0
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  LLM_MODEL: ${LLM_MODEL:-claude-sonnet-4-6}
+  RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+  RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+  RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+  PAYMENT_EXECUTOR: ${PAYMENT_EXECUTOR:-razorpay}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-praman}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-praman}
+      POSTGRES_DB: ${POSTGRES_DB:-praman}
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-praman} -d ${POSTGRES_DB:-praman}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6381:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    environment: *api-env
+    ports:
+      - "8010:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').getcode()==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 10s
+
+  mcp:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    environment: *api-env
+    ports:
+      - "8011:8001"
+    depends_on:
+      api:
+        condition: service_healthy
+    command: ["python", "-m", "apps.mcp_storefront.server"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health').getcode()==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 10s
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    environment: *api-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["python", "-m", "apps.api.worker"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import pathlib,sys,time; p=pathlib.Path('/tmp/worker_alive'); sys.exit(0 if p.exists() and time.time()-p.stat().st_mtime < 30 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8010}
+    ports:
+      - "5174:5173"
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5173"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  pgdata:
+  redisdata:
