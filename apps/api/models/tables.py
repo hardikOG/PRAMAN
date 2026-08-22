@@ -14,9 +14,9 @@ A few DB-only columns exist that aren't on the corresponding Pydantic model
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
-from sqlalchemy import JSON, BigInteger, DateTime, Float, ForeignKey, Integer, Text
+from sqlalchemy import JSON, BigInteger, DateTime, Float, ForeignKey, Integer, Text, TypeDecorator
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -24,6 +24,33 @@ from sqlalchemy.sql import func
 from apps.api.db import Base
 
 PortableJSON = JSON().with_variant(JSONB, "postgresql")
+
+
+class UTCDateTime(TypeDecorator):
+    """`DateTime(timezone=True)` that guarantees a tz-aware (UTC) Python
+    value on the way back out, on every dialect.
+
+    SQLite has no native tz-aware timestamp type — it round-trips a naive
+    datetime regardless of what went in. Without this, a `Mandate` object
+    rebuilt from a DB row would serialize its timestamps differently than
+    the original in-memory object (naive vs. UTC-aware ISO strings), which
+    silently produces different canonical bytes and breaks Ed25519 signature
+    verification after *any* DB round-trip — not a hypothetical, this broke
+    the revocation test the first time it was written.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect: object) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value
+
+    def process_result_value(self, value: datetime | None, dialect: object) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value
 
 
 class MandateRow(Base):
@@ -49,9 +76,9 @@ class MandateRow(Base):
 
     intent_text: Mapped[str] = mapped_column(Text)
 
-    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    issued_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
 
     constraints: Mapped[list[ConstraintRow]] = relationship(
         back_populates="mandate", cascade="all, delete-orphan"
@@ -129,7 +156,7 @@ class DecisionRow(Base):
     razorpay_order_id: Mapped[str | None] = mapped_column(default=None)
     razorpay_payment_id: Mapped[str | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), index=True
+        UTCDateTime, server_default=func.now(), index=True
     )
 
     findings: Mapped[list[FindingRow]] = relationship(
@@ -177,7 +204,7 @@ class ProofBundleRow(Base):
     prev_hash: Mapped[str] = mapped_column(Text)
     payload_hash: Mapped[str] = mapped_column(Text, index=True)
     signature: Mapped[str] = mapped_column(Text)
-    signed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    signed_at: Mapped[datetime] = mapped_column(UTCDateTime)
     payload: Mapped[dict] = mapped_column(PortableJSON)
 
     decision: Mapped[DecisionRow] = relationship(back_populates="proof_bundle")
