@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     behaviour_loop_min_repeats: int = 3
     behaviour_event_stream_maxlen: int = 500
 
+    # S2 faithfulness stage
+    faithfulness_min_confidence: float = 0.7
+
     # Crypto
     ledger_signing_key_path: str = ".keys/ledger_ed25519.pem"
 

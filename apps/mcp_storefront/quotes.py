@@ -18,12 +18,22 @@ QUOTE_TTL_SECONDS = 900
 
 
 class QuoteLineItem(BaseModel):
-    """One requested SKU/quantity pair, as priced into a `Quote`."""
+    """One requested SKU/quantity pair, as priced into a `Quote`.
+
+    `category` rides alongside `attributes` (rather than folded into it)
+    while it's still the storefront's own line-item shape; the eventual
+    quote → gateway `Cart` conversion (Phase 6) is what folds it into
+    `CartItem.attributes["category"]`, since the gateway's fixed `CartItem`
+    schema (§6) has no dedicated category field — S2's faithfulness stage
+    (stage_faithfulness.py) checks CATEGORY constraints against exactly that
+    key.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     sku: str
     name: str
+    category: str
     unit_price_paise: int = Field(ge=0)
     qty: int = Field(ge=1)
     attributes: dict[str, str] = Field(default_factory=dict)
@@ -74,6 +84,7 @@ async def request_quote(
             QuoteLineItem(
                 sku=product.sku,
                 name=product.name,
+                category=product.category,
                 unit_price_paise=product.price_paise,
                 qty=qty,
                 attributes=product.attributes,
