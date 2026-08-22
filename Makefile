@@ -42,20 +42,25 @@ typecheck: ## Mypy
 
 check: lint typecheck test ## Lint + typecheck + test
 
-migrate: ## Apply database migrations (inside the api container)
-	$(COMPOSE) run --rm api alembic upgrade head
+# seed/demo/eval/redteam run natively against the .env.example defaults
+# (SQLite + fake://local) — no Docker needed. Point DATABASE_URL/REDIS_URL at
+# the compose stack instead (see .env.example) if you want them to run
+# through `make up`'s real Postgres/Redis; the code path is identical either
+# way since apps/api/models/tables.py and redis_client.py are dialect-portable.
+migrate: ## Apply database migrations (against $DATABASE_URL; alembic env.py reads .env)
+	$(PY) -m alembic upgrade head
 
-seed: ## Seed catalog + generate the ledger signing key + mint a demo mandate
-	$(COMPOSE) run --rm api $(PY) -m apps.api.cli seed
+seed: ## Seed catalog + generate the ledger signing key
+	$(PY) -m apps.api.cli seed
 
-demo: ## Seed, mint a mandate, run one honest + one adversarial scenario end to end
-	$(COMPOSE) run --rm api $(PY) -m apps.api.cli demo
+demo: ## Seed, mint a mandate, run one honest purchase end to end, export the proof bundle
+	$(PY) -m apps.api.cli demo
 
 eval: ## Run the full evaluation harness and write eval/RESULTS.md
-	$(COMPOSE) run --rm api $(PY) -m eval.runner
+	$(PY) -m eval.runner
 
 redteam: ## Run only the adversarial suite and print the catch-rate table
-	$(COMPOSE) run --rm api $(PY) -m eval.runner --redteam-only
+	$(PY) -m eval.runner --redteam-only
 
 clean: ## Remove caches and build artifacts
 	rm -rf .pytest_cache .ruff_cache .mypy_cache .coverage htmlcov *.egg-info

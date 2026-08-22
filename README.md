@@ -1,28 +1,220 @@
 # PRAMAN
 
-> **Status: under active build.** This is a placeholder landing page. The real
-> README — problem statement, architecture diagram, 60-second quickstart,
-> measured results, limitations — is written in Phase 9 per `PRAMAN_BUILD.md`.
+**प्रमाण — "valid proof."** A verifiable-authorization and proof-of-payment
+layer for AI buyer agents paying through Razorpay.
 
-**PRAMAN** (प्रमाण — "valid proof") is a verifiable-authorization and
-proof-of-payment layer for AI buyer agents making payments through Razorpay.
-It verifies that a cart an agent is about to pay for actually satisfies the
-human's stated intent — not just that it's under a spending cap — and emits a
-signed, hash-chained evidence bundle for every decision.
+Built for the Razorpay AI Builder Internship 2026, Track 1: AI Growth & Agentic Commerce.
 
-See [`PRAMAN_BUILD.md`](./PRAMAN_BUILD.md) for the full spec, architecture,
-and phase plan driving this build.
+![Honest purchase, decision trace resolving](docs/screenshots/01_playground.png)
 
-## Current status
+## The problem
 
-- **Phase 0 — Scaffold:** repo layout, `docker-compose.yml`, `Makefile`,
-  environment config, async DB session, Alembic base, health endpoints,
-  ruff/mypy/pytest tooling.
+India's payment rails assume human intent is captured at the moment of
+payment — OTP, 3DS, "I tapped Pay." AI buyer agents break that assumption:
+the human states intent once, in natural language, ahead of time; the agent
+acts later, alone, with no human at the keyboard. Three things go wrong at
+once:
 
-## Quickstart (development)
+1. **The merchant can't prove authorization.** When a human disputes a
+   charge, there's no signed artifact linking their actual intent to the
+   specific cart that was charged.
+2. **The PSP can't tell a good agent from a bot,** so the safe move is to
+   decline agent traffic wholesale.
+3. **Nobody checks whether the agent bought the right thing.** Every mandate
+   spec in flight today (AP2, ACP, x402, NPCI's UAP) constrains *limits* —
+   amount, merchant, expiry. None of them verify the cart the agent
+   assembled actually satisfies the intent the human expressed. An agent
+   that hallucinates a SKU, silently accepts an upsell, buys the wrong size,
+   or gets prompt-injected by a product page sails through every limit
+   check in existence today, because ₹3,499 is under the ₹4,000 cap.
+
+**The thesis:** merchants block agent traffic because agent risk is
+unquantifiable. PRAMAN makes it quantifiable — it independently verifies
+that the cart matches the human's stated intent, constraint by constraint,
+before money moves, and emits a hash-chained, signed evidence bundle for
+every decision so the merchant has something to hand an issuer in a
+dispute.
+
+## Architecture
+
+```
+  HUMAN                          BUYER AGENT (any LLM, via MCP)
+    │                                    │
+    │ issues signed mandate              │ discovers, quotes, builds cart
+    ▼                                    ▼
+┌──────────────────┐            ┌───────────────────────┐
+│ Mandate Service  │◀───────────│  Agent Storefront     │
+│ Ed25519 keys     │  verify    │  MCP server            │
+│ scope + budget   │            │  catalog / quote /     │
+└──────────────────┘            │  checkout tools         │
+                                └───────────┬─────────────┘
+                                            │ POST /authorize
+                                            ▼
+                        ┌───────────────────────────────────────┐
+                        │           PRAMAN GATEWAY               │
+                        │  S1  Mandate verification      (~1ms)  │
+                        │  S2  Intent–cart faithfulness (~0.3ms)*│
+                        │  S3  Behaviour anomaly          (~0.3ms)│
+                        │  S4  Policy fusion → decision           │
+                        └────────┬──────────────┬─────────────────┘
+                                 │              │
+                     ALLOW ──────┘              └────── STEP_UP / BLOCK
+                        │                                   │
+                        ▼                                   ▼
+              ┌───────────────────┐              ┌────────────────────┐
+              │ Razorpay test-mode│              │ Human confirmation │
+              │ Orders + capture  │              │ link (15 min TTL)  │
+              └─────────┬─────────┘              └────────────────────┘
+                        │
+                        ▼
+              ┌─────────────────────────────────┐
+              │  PROOF LEDGER (hash-chained)    │
+              │  mandate + intent + cart +      │
+              │  findings + scores + rz ids     │
+              │  → signed bundle, offline-      │
+              │    verifiable, no DB needed      │
+              └─────────────────────────────────┘
+```
+*\*S2's timing above is measured against the offline structural heuristic used when no `ANTHROPIC_API_KEY` is configured (see [Results](#results)) — a live per-constraint LLM call adds real network latency, which is exactly why S2 has its own p95 line in the eval report.*
+
+Five components, one repo: **Mandate Service** (Ed25519-signed, scoped
+human→agent authorizations), **Agent Storefront** (an MCP server for a demo
+merchant, "Kicks & Co", backed by Razorpay test-mode Orders), the **PRAMAN
+Gateway** (the four-stage pipeline above), the **Proof Ledger**
+(hash-chained, independently verifiable evidence bundles), and a **Console**
+(the three screens below).
+
+## 60-second quickstart
+
+No Docker required — SQLite + an in-process fake Redis by default.
 
 ```bash
-cp .env.example .env   # add ANTHROPIC_API_KEY / RAZORPAY_KEY_* when you have them
-make up                # postgres, redis, api, mcp, worker, web
-make test
+git clone https://github.com/hardikOG/PRAMAN.git
+cd PRAMAN
+python -m venv .venv && .venv/Scripts/activate   # source .venv/bin/activate on macOS/Linux
+pip install -e ".[dev]"
+cp .env.example .env
+python -m apps.api.cli seed
+python -m apps.api.cli demo
 ```
+
+That last command mints a mandate, builds a cart from the demo storefront,
+runs it through the real S1→S4 pipeline, captures a payment (via
+`DeterministicExecutor` — add real `RAZORPAY_KEY_ID`/`RAZORPAY_KEY_SECRET` to
+`.env` to see a live Razorpay test-mode capture instead), and writes a signed
+proof bundle to `demo_bundle.json`. Verify it independently, then tamper with
+one byte and watch it fail:
+
+```bash
+python -m apps.api.cli verify demo_bundle.json "<public key printed above>"
+```
+
+Have `make` installed (Linux/macOS, or `choco install make` on Windows)? The
+same steps are `make install`, `make seed`, `make demo`. `make up` brings up
+the full Postgres/Redis/console stack instead, if you have Docker.
+
+To see the console:
+
+```bash
+python -m uvicorn apps.api.main:app --port 8010 &
+cd apps/web && npm install && npm run dev
+```
+
+## Results
+
+Measured by `make eval` (or `python -m eval.runner`) against 520 generated
+scenarios — 260 honest (crisp, vague, and genuinely underspecified intents)
+and 260 adversarial across 8 attack classes. Full breakdown in
+[`eval/RESULTS.md`](eval/RESULTS.md); raw data in
+[`eval/results.json`](eval/results.json).
+
+| Catch rate | False block | Step-up rate | p95 latency |
+|---|---|---|---|
+| **100.0%** | **0.0%** | 21.2% | 0.33s |
+
+**Ablation — what each stage actually contributes:**
+
+| Configuration | Catch rate | False block | p95 |
+|---|---|---|---|
+| S1 only (limits, as every mandate spec today checks) | 23.1% | 0.0% | 0.52s |
+| S1 + S3 (limits + behaviour) | 42.3% | 0.0% | 0.29s |
+| S1 + S2 (limits + faithfulness) | 80.8% | 0.0% | 0.70s |
+| **S1 + S2 + S3 (PRAMAN, full pipeline)** | **100.0%** | **0.0%** | 0.35s |
+
+Limits-only — the industry's current state of the art — misses roughly
+three-quarters of the attacks in this suite. Faithfulness checking (S2) is
+where most of the catch rate comes from; behaviour scoring (S3) catches the
+two classes (velocity drain, price-probe loops) that faithfulness checking
+structurally can't, since each individual request in those attacks is
+perfectly well-formed.
+
+**Honest caveat:** these numbers were measured with no `ANTHROPIC_API_KEY`
+configured, so S2's faithfulness adjudication ran on `eval/offline_llm.py` —
+a documented, non-LLM structural heuristic that regex-parses fields
+straight out of the rendered prompt and never reads free text. It is
+*structurally* immune to the prompt-injection class (it never reads the
+injected string at all), which is a different claim from a live model
+*resisting* injection. Add a real key and re-run `make eval` for numbers
+that say something about Claude's actual behaviour; the harness and every
+number it produces are otherwise real.
+
+Test suite: 209 passed, 1 skipped (documented — an LLM-gated test with no
+key configured). `ruff` and `mypy` clean. Gateway + ledger coverage: 95%.
+
+## Console
+
+| Playground (attack, blocked) | Proof Inspector |
+|---|---|
+| ![Blocked](docs/screenshots/02_playground_blocked.png) | ![Proof](docs/screenshots/04_proof_inspector.png) |
+
+| Live ledger | Red-team results |
+|---|---|
+| ![Ledger](docs/screenshots/03_ledger.png) | ![Red team](docs/screenshots/05_redteam.png) |
+
+Ninety-second walkthrough: [`docs/screenshots/playground_demo.gif`](docs/screenshots/playground_demo.gif).
+
+## Repo layout
+
+```
+apps/api/            fast path — FastAPI app, gateway (S1-S4), mandates, ledger, payments
+apps/mcp_storefront/  demo merchant — MCP server, 40-item catalog, Razorpay orders
+apps/web/             React console — Playground, Ledger, Red Team
+agents/               scenario generators — honest, sloppy, 8 adversarial classes
+eval/                 520-scenario harness, ablation sweep, RESULTS.md + charts
+db/, core/            (see apps/api/models, apps/api/config — see ARCHITECTURE.md)
+tests/                pytest — 95% coverage on gateway/ and ledger/
+docs/                 ARCHITECTURE.md, SUBMISSION.md, screenshots, this README
+```
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the five hardest design calls
+and why they landed the way they did, and [`PRAMAN_BUILD.md`](PRAMAN_BUILD.md)
+for the original build spec.
+
+## Limitations
+
+- **No live-LLM measurement yet.** The headline numbers above run on the
+  offline heuristic (see the caveat under Results); the code path for the
+  real `AnthropicLLMClient` is complete and unit-tested, but re-running
+  `make eval` with a real key — and reporting what changes — is the
+  immediate next step, not a hypothetical one.
+- **Docker Desktop was broken on the build machine for most of this build**
+  (a documented WSL2/disk-space issue, not a PRAMAN bug). `docker-compose.yml`
+  is complete and correct for the full Postgres/Redis/console stack, but it
+  was not exercised end-to-end in this environment; the native SQLite +
+  fake-Redis path was, extensively, and is what every gate in this repo was
+  actually verified against. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for
+  the specifics.
+- **One demo merchant, one catalog, one currency.** Multi-merchant and
+  multi-currency are straightforward extensions of the existing schema, not
+  attempted here for scope reasons.
+- **STEP_UP is a token and a TTL, not a real notification channel.** There's
+  no SMS/push/email integration; a human confirms via the console or a
+  direct API call.
+- **The behaviour-anomaly stage (S3) is threshold-based, not learned.** It
+  catches the two attack classes in this suite deliberately designed to look
+  clean at the single-request level, but it is not an anomaly-detection
+  model and doesn't claim to generalize beyond what its thresholds encode.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
