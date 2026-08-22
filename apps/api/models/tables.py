@@ -157,6 +157,7 @@ class DecisionRow(Base):
     razorpay_payment_id: Mapped[str | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=func.now(), index=True)
 
+    cart: Mapped[CartRow] = relationship(foreign_keys=[cart_id])
     findings: Mapped[list[FindingRow]] = relationship(
         back_populates="decision", cascade="all, delete-orphan"
     )

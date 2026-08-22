@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from apps.api.models.schemas import Cart, Decision
 from apps.api.models.tables import CartItemRow, CartRow, DecisionRow, FindingRow
@@ -70,3 +72,35 @@ async def save_decision(session: AsyncSession, decision: Decision) -> None:
         )
     )
     await session.flush()
+
+
+async def list_recent_decisions(session: AsyncSession, *, limit: int = 50) -> list[DecisionRow]:
+    """The console's Ledger feed: most recent decisions first, with their
+    cart (and its items) and findings eager-loaded in the same round trip.
+
+    Complexity: O(limit) rows plus their related rows.
+    """
+    result = await session.execute(
+        select(DecisionRow)
+        .options(
+            selectinload(DecisionRow.findings),
+            selectinload(DecisionRow.cart).selectinload(CartRow.items),
+        )
+        .order_by(DecisionRow.created_at.desc())
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def get_decision(session: AsyncSession, decision_id: str) -> DecisionRow | None:
+    """Fetch one decision by id, with cart/items/findings eager-loaded —
+    what the console's proof inspector and decision-detail views need."""
+    result = await session.execute(
+        select(DecisionRow)
+        .where(DecisionRow.id == decision_id)
+        .options(
+            selectinload(DecisionRow.findings),
+            selectinload(DecisionRow.cart).selectinload(CartRow.items),
+        )
+    )
+    return result.scalar_one_or_none()
