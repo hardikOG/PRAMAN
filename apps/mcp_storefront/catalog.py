@@ -373,6 +373,22 @@ def get_product(sku: str) -> Product | None:
     return next((p for p in CATALOG if p.sku == sku), None)
 
 
+def get_product_or_raise(sku: str) -> Product:
+    """Like `get_product`, but for callers (fixed test/eval scenario data)
+    that already know the SKU exists — a typed non-Optional return instead
+    of an `assert product is not None` at every call site, which mypy
+    cannot narrow through a module-level variable used inside a later
+    function's closure.
+
+    Failure cases: raises `KeyError` for an unknown SKU — a bug in the
+    caller's own hardcoded SKU, not a runtime condition to handle gracefully.
+    """
+    product = get_product(sku)
+    if product is None:
+        raise KeyError(f"unknown SKU: {sku}")
+    return product
+
+
 def search_catalog(
     *, query: str | None = None, category: str | None = None, max_price_paise: int | None = None
 ) -> list[Product]:

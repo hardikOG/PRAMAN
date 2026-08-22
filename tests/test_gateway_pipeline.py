@@ -38,6 +38,7 @@ _THRESHOLDS = PipelineThresholds(
     auto_strip_max_fraction=0.10,
     behaviour_step_up_threshold=0.4,
     step_up_ttl_seconds=900,
+    behaviour_event_stream_maxlen=500,
 )
 
 

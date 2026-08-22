@@ -118,6 +118,7 @@ def _build_thresholds() -> PipelineThresholds:
         auto_strip_max_fraction=settings.auto_strip_max_fraction,
         behaviour_step_up_threshold=settings.behaviour_step_up_threshold,
         step_up_ttl_seconds=settings.step_up_ttl_seconds,
+        behaviour_event_stream_maxlen=settings.behaviour_event_stream_maxlen,
     )
 
 

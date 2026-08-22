@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.gateway.behaviour_events import cart_signature
+from apps.api.gateway.behaviour_events import cart_signature, record_agent_event
 from apps.api.gateway.policy import fuse_decision
 from apps.api.gateway.repository import save_cart, save_decision
 from apps.api.gateway.stage_behaviour import BehaviourResult, evaluate_behaviour
@@ -83,6 +83,7 @@ class PipelineThresholds:
     auto_strip_max_fraction: float
     behaviour_step_up_threshold: float
     step_up_ttl_seconds: int
+    behaviour_event_stream_maxlen: int
 
 
 @dataclass(frozen=True)
@@ -144,9 +145,16 @@ async def authorize(
     payment_executor: PaymentExecutor,
     thresholds: PipelineThresholds,
     at: datetime | None = None,
+    include_s2: bool = True,
+    include_s3: bool = True,
 ) -> AuthorizationResult:
     """Run the full S1-S4 pipeline for one cart, persisting cart, decision,
     and (on ALLOW) a signed proof bundle.
+
+    `include_s2`/`include_s3` exist for the eval harness's ablation study
+    (Phase 8) — set False to measure what S1 alone (or S1+S3, or S1+S2)
+    would have decided, with the skipped stage treated as trivially passing
+    rather than removed from the pipeline's shape.
 
     Complexity: O(1) S1 checks + one LLM call per LLM-adjudicated constraint
     (S2) + O(1) S3 checks, plus one payment-executor round trip on ALLOW.
@@ -161,24 +169,47 @@ async def authorize(
     )
 
     if s1.passed:
-        s2 = evaluate_faithfulness(
-            cart,
-            mandate.constraints,
-            llm_client,
-            min_confidence=thresholds.faithfulness_min_confidence,
+        cart_sig = cart_signature([(i.sku, i.qty) for i in cart.items])
+        s2 = (
+            evaluate_faithfulness(
+                cart,
+                mandate.constraints,
+                llm_client,
+                min_confidence=thresholds.faithfulness_min_confidence,
+            )
+            if include_s2
+            else FaithfulnessResult(findings=[], unrequested_items=[], latency_ms=0.0)
         )
-        s3 = await evaluate_behaviour(
+        # Read before write: this attempt's own event must not count toward
+        # its own burst/probe/loop score, only prior attempts should. This
+        # always runs (even with include_s3=False) so the event stream
+        # stays real for whichever ablation configuration runs next —
+        # only whether the *score* feeds the decision is toggled below.
+        s3_measured = await evaluate_behaviour(
             redis,
             mandate.agent_id,
             at,
-            cart_signature=cart_signature([(i.sku, i.qty) for i in cart.items]),
+            cart_signature=cart_sig,
             max_req_per_sec=thresholds.behaviour_max_req_per_sec,
             burst_window_seconds=thresholds.behaviour_burst_window_seconds,
             probe_window_seconds=thresholds.behaviour_probe_window_seconds,
             probe_min_quotes=thresholds.behaviour_probe_min_quotes,
             loop_min_repeats=thresholds.behaviour_loop_min_repeats,
         )
+        s3 = (
+            s3_measured
+            if include_s3
+            else BehaviourResult(score=0.0, signals=[], latency_ms=s3_measured.latency_ms)
+        )
         await record_transaction(redis, mandate.id, at)
+        await record_agent_event(
+            redis,
+            mandate.agent_id,
+            "cart_submitted",
+            at,
+            cart_signature=cart_sig,
+            maxlen=thresholds.behaviour_event_stream_maxlen,
+        )
     else:
         s2 = FaithfulnessResult(findings=[], unrequested_items=[], latency_ms=0.0)
         s3 = BehaviourResult(score=0.0, signals=[], latency_ms=0.0)
@@ -252,7 +283,13 @@ async def authorize(
             redis, decision.id, ttl_seconds=thresholds.step_up_ttl_seconds
         )
 
-    await save_cart(session, cart)
+    # A replay is provably a resubmission of a cart id already persisted by
+    # the original attempt — re-inserting it would violate the cart table's
+    # primary key. Only the decision (a fresh row per attempt) is recorded,
+    # so a replay attempt still shows up in the ledger, just without trying
+    # to duplicate the cart it's replaying.
+    if s1.reason_code != "replay_detected":
+        await save_cart(session, cart)
     await save_decision(session, decision)
 
     return AuthorizationResult(

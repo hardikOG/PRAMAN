@@ -28,6 +28,7 @@ dependencies = [
     "pyyaml>=6.0",
     "typer>=0.15",
     "fakeredis>=2.26",
+    "matplotlib>=3.9",
 ]
 
 [project.optional-dependencies]
@@ -73,7 +74,15 @@ ignore = [
 
 # ── Mypy ──────────────────────────────────────────────────────────────────────
 [tool.mypy]
-python_version = "3.11"
+# Set to 3.12, one above the app's actual runtime target (python:3.11-slim
+# in docker/Dockerfile.api — that pin is unaffected by this setting). Under
+# 3.11, mypy's *parser* hard-fails just loading numpy's stub (a PEP 695
+# `type` statement, pulled in transitively by eval/report.py's matplotlib
+# charts) before any per-module override (ignore_errors, follow_imports)
+# gets a chance to apply — this is a parse-time abort, not a type-checking
+# result, so those overrides can't help. Our own code never uses 3.12-only
+# syntax; this loosens what mypy's parser accepts, not what we write.
+python_version = "3.12"
 warn_unused_configs = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
@@ -87,6 +96,7 @@ plugins = ["pydantic.mypy"]
 # Third-party packages without bundled type stubs.
 module = ["razorpay.*", "mcp.*"]
 ignore_missing_imports = true
+
 
 # ── Pytest ────────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]
