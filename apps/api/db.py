@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from functools import lru_cache
 from pathlib import Path
 
+from sqlalchemy import event
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -38,6 +39,26 @@ def _ensure_sqlite_parent_dir(database_url: str) -> None:
         Path(url.database).parent.mkdir(parents=True, exist_ok=True)
 
 
+def enable_sqlite_foreign_keys(engine: AsyncEngine) -> None:
+    """SQLite silently ignores every `ForeignKey(...)` declared in
+    `models/tables.py` unless `PRAGMA foreign_keys=ON` is set per connection
+    — it is off by default for backwards compatibility, unlike Postgres,
+    which always enforces foreign keys. Without this, a row with a dangling
+    foreign key (e.g. a `DecisionRow` pointing at a `cart_id` that doesn't
+    exist) inserts cleanly against SQLite — the zero-Docker default this
+    project's own tests and CLI run against — and would only be caught
+    later, in production, against Postgres. A no-op for non-SQLite engines.
+    """
+    if not engine.sync_engine.dialect.name.startswith("sqlite"):
+        return
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection: object, _connection_record: object) -> None:
+        cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+
 @lru_cache(maxsize=1)
 def get_engine() -> AsyncEngine:
     """Build (once) the async engine for the configured database.
@@ -52,7 +73,9 @@ def get_engine() -> AsyncEngine:
     """
     settings = get_settings()
     _ensure_sqlite_parent_dir(settings.database_url)
-    return create_async_engine(settings.database_url, pool_pre_ping=True)
+    engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+    enable_sqlite_foreign_keys(engine)
+    return engine
 
 
 def get_sessionmaker() -> async_sessionmaker[AsyncSession]:

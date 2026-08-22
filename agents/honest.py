@@ -25,10 +25,22 @@ def _price_cap(product: Product) -> int:
     return int(product.price_paise * 1.15 // 1000) * 1000 + 5000
 
 
-def _constraints_for(product: Product, *, include_attributes: bool) -> list[Constraint]:
+def _constraints_for(
+    product: Product, *, scenario_id: str, include_attributes: bool
+) -> list[Constraint]:
+    """`scenario_id` (not just `product.sku`) is folded into every
+    constraint id here because scenario generation samples products *with*
+    replacement — `rng.choices(..., k=n)` — across hundreds of scenarios, so
+    the same SKU is picked many times. IDs keyed on the SKU alone collide
+    across those scenarios (`constraints.id` is a real primary key once a
+    mandate is actually persisted, which every real mandate is), and did:
+    a mandate save for two crisp scenarios that happened to draw the same
+    product raised `UNIQUE constraint failed: constraints.id`, invisible
+    only because nothing in the eval harness used to persist mandates at
+    all (see eval/runner.py)."""
     constraints = [
         Constraint(
-            id=f"c-price-{product.sku}",
+            id=f"c-price-{scenario_id}",
             type=ConstraintType.MAX_PRICE,
             field="price",
             operator="<=",
@@ -37,7 +49,7 @@ def _constraints_for(product: Product, *, include_attributes: bool) -> list[Cons
             source_span=f"under the cap for {product.name}",
         ),
         Constraint(
-            id=f"c-cat-{product.sku}",
+            id=f"c-cat-{scenario_id}",
             type=ConstraintType.CATEGORY,
             field="category",
             operator="==",
@@ -52,7 +64,7 @@ def _constraints_for(product: Product, *, include_attributes: bool) -> list[Cons
         if "size" in product.attributes:
             constraints.append(
                 Constraint(
-                    id=f"c-size-{product.sku}",
+                    id=f"c-size-{scenario_id}",
                     type=ConstraintType.ATTRIBUTE,
                     field="size",
                     operator="==",
@@ -69,7 +81,7 @@ def _constraints_for(product: Product, *, include_attributes: bool) -> list[Cons
             excluded_colour = next(c for c in _OTHER_COLOURS if c != actual_colour)
             constraints.append(
                 Constraint(
-                    id=f"c-colour-{product.sku}",
+                    id=f"c-colour-{scenario_id}",
                     type=ConstraintType.MUST_NOT_HAVE,
                     field="colour",
                     operator="!=",
@@ -94,7 +106,9 @@ def generate_crisp_scenarios(n: int, *, seed: int = 42) -> list[Scenario]:
                 id=scenario_id,
                 category="honest",
                 intent_text=f"a {product.name.lower()} for me, {product.category}",
-                constraints=_constraints_for(product, include_attributes=True),
+                constraints=_constraints_for(
+                    product, scenario_id=scenario_id, include_attributes=True
+                ),
                 merchant_id="kicks-co",
                 cart_items=[ScenarioCartItem(sku=product.sku, qty=1)],
                 expected_outcome=DecisionOutcome.ALLOW,
@@ -117,7 +131,9 @@ def generate_vague_scenarios(n: int, *, seed: int = 43) -> list[Scenario]:
                 id=scenario_id,
                 category="honest",
                 intent_text=f"something like a {product.category.split('.')[-1]}",
-                constraints=_constraints_for(product, include_attributes=False),
+                constraints=_constraints_for(
+                    product, scenario_id=scenario_id, include_attributes=False
+                ),
                 merchant_id="kicks-co",
                 cart_items=[ScenarioCartItem(sku=product.sku, qty=1)],
                 expected_outcome=DecisionOutcome.ALLOW,

@@ -261,6 +261,38 @@ def test_unrequested_detection_skips_when_cart_is_ambiguous() -> None:
     assert detect_unrequested_items(cart, None) == []
 
 
+def test_ambiguous_multi_item_cart_with_no_attribute_constraint_is_undetermined_not_allowed() -> (
+    None
+):
+    """Regression: a mandate whose intent is entirely plausible ("running
+    shoes under ₹4000") but carries no ATTRIBUTE/MUST_HAVE/MUST_NOT_HAVE
+    constraint gives `identify_target_item` nothing to narrow a multi-item
+    cart down with. Before this fix, MAX_PRICE fell back to checking the
+    cart *total* and CATEGORY fell back to "any item matches" — both rule
+    checks were satisfied, `detect_unrequested_items` correctly refused to
+    guess and returned `[]`, and nothing in the pipeline flagged the second,
+    entirely unrequested shoe. That's a silent upsell sailing straight
+    through the one stage built to catch silent upsells. An explicit
+    UNDETERMINED finding closes the gap by routing this to STEP_UP via S4's
+    existing precedence, instead of computing every check happy and
+    reporting zero unrequested items."""
+    cart = _cart(
+        [
+            _shoe("NR-A9", size="UK9", colour="Ash", price=200_000),
+            _shoe("NR-EXTRA", size="UK10", colour="Black", price=150_000),
+        ]
+    )
+    constraints = [_MAX_PRICE, _CATEGORY]  # deliberately no ATTRIBUTE/MUST_* constraint
+    result = evaluate_faithfulness(cart, constraints, FakeLLMClient({}), min_confidence=0.7)
+
+    rule_findings = [f for f in result.findings if f.constraint_id in ("c1", "c2")]
+    assert all(f.verdict == Verdict.SATISFIED for f in rule_findings)
+    assert result.unrequested_items == []
+    ambiguity_findings = [f for f in result.findings if f.constraint_id == "_cart_ambiguity"]
+    assert len(ambiguity_findings) == 1
+    assert ambiguity_findings[0].verdict == Verdict.UNDETERMINED
+
+
 # ── full gate scenario, end to end ───────────────────────────────────────
 
 

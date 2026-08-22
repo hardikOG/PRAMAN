@@ -5,7 +5,7 @@ bundles, and confirming that tampering with any single byte (in the payload,
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from apps.api.ledger.bundle import build_proof_bundle, verify_proof_bundle
@@ -135,7 +135,14 @@ def test_chain_of_three_bundles_verifies() -> None:
     for bundle in bundles:
         assert verify_proof_bundle(bundle, key.public_key()) is True
 
-    entries = [(b.prev_hash, b.payload.model_dump(mode="json"), b.payload_hash) for b in bundles]
+    entries = [
+        (
+            b.prev_hash,
+            {"signed_at": b.signed_at.isoformat(), "payload": b.payload.model_dump(mode="json")},
+            b.payload_hash,
+        )
+        for b in bundles
+    ]
     assert verify_chain(entries) is True
 
 
@@ -200,6 +207,26 @@ def test_tampering_with_signature_breaks_verification() -> None:
     assert verify_proof_bundle(tampered_bundle, key.public_key()) is False
 
 
+def test_tampering_with_signed_at_breaks_verification() -> None:
+    """Regression: `signed_at` is a `ProofBundle`-level field, not a
+    `payload` field, and was originally left out of the hashed envelope
+    entirely — a bundle's claimed signing time could be edited after the
+    fact with no detectable effect on `praman verify`. `signed_at` must be
+    folded into what `payload_hash` commits to."""
+    key = generate_signing_key()
+    payload = _make_payload()
+    bundle = build_proof_bundle(
+        decision_id=payload.decision.id, prev_hash=GENESIS_HASH, payload=payload, signing_key=key
+    )
+    assert verify_proof_bundle(bundle, key.public_key()) is True
+
+    dump = bundle.model_dump(mode="json")
+    original = datetime.fromisoformat(dump["signed_at"])
+    dump["signed_at"] = (original + timedelta(seconds=1)).isoformat()
+    tampered_bundle = type(bundle).model_validate(dump)
+    assert verify_proof_bundle(tampered_bundle, key.public_key()) is False
+
+
 def test_splicing_a_different_predecessor_breaks_the_chain() -> None:
     """Even if an attacker re-signs a bundle after swapping its predecessor,
     the *next* bundle in the real chain still points at the original
@@ -221,9 +248,12 @@ def test_splicing_a_different_predecessor_breaks_the_chain() -> None:
         signing_key=key,
     )
 
+    def _envelope(b):
+        return {"signed_at": b.signed_at.isoformat(), "payload": b.payload.model_dump(mode="json")}
+
     forged_prev_hash = "f" * 64
     entries = [
-        (bundle_a.prev_hash, bundle_a.payload.model_dump(mode="json"), bundle_a.payload_hash),
-        (forged_prev_hash, bundle_b.payload.model_dump(mode="json"), bundle_b.payload_hash),
+        (bundle_a.prev_hash, _envelope(bundle_a), bundle_a.payload_hash),
+        (forged_prev_hash, _envelope(bundle_b), bundle_b.payload_hash),
     ]
     assert verify_chain(entries) is False

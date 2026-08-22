@@ -19,11 +19,12 @@ from datetime import UTC, datetime, timedelta
 
 from agents.scenario import Scenario
 from apps.api.config import get_settings
-from apps.api.db import Base
+from apps.api.db import Base, enable_sqlite_foreign_keys
 from apps.api.gateway.behaviour_events import record_agent_event
 from apps.api.gateway.pipeline import PipelineThresholds, authorize, quote_to_cart
 from apps.api.ledger.crypto import generate_signing_key, public_key_b64
 from apps.api.llm_client import AnthropicLLMClient, LLMClient, OfflineDemoLLMClient
+from apps.api.mandates.repository import save_mandate
 from apps.api.mandates.service import sign_mandate
 from apps.api.models.schemas import Cart, DecisionOutcome, Mandate, VelocityLimits
 from apps.api.payments.executor import DeterministicExecutor
@@ -169,6 +170,7 @@ async def run_scenario(
     scored (final) outcome."""
     principal_key = generate_signing_key()
     mandate = _build_mandate(scenario, principal_key)
+    await save_mandate(session, mandate)
     executor = DeterministicExecutor()
     agent_id = mandate.agent_id
 
@@ -251,6 +253,7 @@ async def run_all_scenarios(
     """Run the full scenario list under one ablation configuration, with a
     fresh DB/Redis/ledger key — no state leaks between passes."""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    enable_sqlite_foreign_keys(engine)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     sessionmaker = async_sessionmaker(bind=engine, expire_on_commit=False)

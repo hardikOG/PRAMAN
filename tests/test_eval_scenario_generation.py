@@ -110,3 +110,19 @@ def test_all_scenario_ids_are_unique() -> None:
     scenarios = generate_all_scenarios()
     ids = [s.id for s in scenarios]
     assert len(ids) == len(set(ids))
+
+
+def test_all_constraint_ids_are_unique_across_every_scenario() -> None:
+    """Regression: `agents/honest.py` used to key every constraint id on
+    the product SKU alone (`f"c-price-{product.sku}"`), not the scenario —
+    since product sampling is with replacement across ~250 honest
+    scenarios, two scenarios drawing the same SKU produced identical
+    constraint ids. `constraints.id` is a real primary key once a mandate
+    is actually persisted (every real mandate is; `eval/runner.py` didn't
+    used to, which is exactly why this was invisible), so this crashed
+    `save_mandate` with a duplicate-key error on any pair of scenarios
+    sharing a product. Every constraint id, across all 520 generated
+    scenarios, must be globally unique."""
+    scenarios = generate_all_scenarios()
+    constraint_ids = [c.id for s in scenarios for c in s.constraints]
+    assert len(constraint_ids) == len(set(constraint_ids))

@@ -130,16 +130,16 @@ and 260 adversarial across 8 attack classes. Full breakdown in
 
 | Catch rate | False block | Step-up rate | p95 latency |
 |---|---|---|---|
-| **100.0%** | **0.0%** | 21.2% | 0.33s |
+| **100.0%** | **0.0%** | 21.2% | 0.312s |
 
 **Ablation — what each stage actually contributes:**
 
 | Configuration | Catch rate | False block | p95 |
 |---|---|---|---|
-| S1 only (limits, as every mandate spec today checks) | 23.1% | 0.0% | 0.52s |
-| S1 + S3 (limits + behaviour) | 42.3% | 0.0% | 0.29s |
-| S1 + S2 (limits + faithfulness) | 80.8% | 0.0% | 0.70s |
-| **S1 + S2 + S3 (PRAMAN, full pipeline)** | **100.0%** | **0.0%** | 0.35s |
+| S1 only (limits, as every mandate spec today checks) | 23.1% | 0.0% | 0.445s |
+| S1 + S3 (limits + behaviour) | 42.3% | 0.0% | 0.273s |
+| S1 + S2 (limits + faithfulness) | 80.8% | 0.0% | 0.500s |
+| **S1 + S2 + S3 (PRAMAN, full pipeline)** | **100.0%** | **0.0%** | 0.316s |
 
 Limits-only — the industry's current state of the art — misses roughly
 three-quarters of the attacks in this suite. Faithfulness checking (S2) is
@@ -158,7 +158,7 @@ injected string at all), which is a different claim from a live model
 that say something about Claude's actual behaviour; the harness and every
 number it produces are otherwise real.
 
-Test suite: 209 passed, 1 skipped (documented — an LLM-gated test with no
+Test suite: 224 passed, 1 skipped (documented — an LLM-gated test with no
 key configured). `ruff` and `mypy` clean. Gateway + ledger coverage: 95%.
 
 ## Console
@@ -207,9 +207,15 @@ for the original build spec.
 - **One demo merchant, one catalog, one currency.** Multi-merchant and
   multi-currency are straightforward extensions of the existing schema, not
   attempted here for scope reasons.
-- **STEP_UP is a token and a TTL, not a real notification channel.** There's
-  no SMS/push/email integration; a human confirms via the console or a
-  direct API call.
+- **STEP_UP issues a token but nothing redeems it yet.** `issue_step_up_token`
+  / `redeem_step_up_token` (`apps/api/gateway/step_up.py`) are implemented
+  and unit-tested — single-use via Redis `GETDEL`, TTL-bound — but no route
+  or console button actually calls `redeem_step_up_token`. A STEP_UP
+  decision today is a dead end: no SMS/push/email integration, and no
+  confirm-and-complete-the-payment endpoint either. Building that safely
+  (it has to capture payment exactly once and emit a new proof bundle
+  without mutating the original, already-persisted STEP_UP decision) is the
+  next concrete piece of work, not a hypothetical one.
 - **The behaviour-anomaly stage (S3) is threshold-based, not learned.** It
   catches the two attack classes in this suite deliberately designed to look
   clean at the single-request level, but it is not an anomaly-detection

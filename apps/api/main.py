@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.config import get_settings
+from apps.api.db import Base, get_engine
 from apps.api.logging import configure_logging, get_logger
 from apps.api.routes.decisions import router as decisions_router
 from apps.api.routes.eval_results import router as eval_results_router
@@ -25,9 +26,21 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Configure structured logging once at process startup."""
+    """Configure structured logging and ensure tables exist at process
+    startup.
+
+    `create_all` is a no-op against tables that already exist (checked via
+    `IF NOT EXISTS`), so this is safe to run on every startup — it just
+    means starting the API alone, with no prior `praman seed`, doesn't 500
+    on the first request with a confusing "no such table" error (further
+    confused by Starlette dropping CORS headers on an unhandled exception,
+    which reads as a CORS bug in the browser console rather than the real
+    missing-table one)."""
     settings = get_settings()
     configure_logging(settings.log_level)
+    engine = get_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     logger.info("praman.api.startup", env=settings.praman_env)
     yield
     logger.info("praman.api.shutdown")

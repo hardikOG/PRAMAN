@@ -6,7 +6,7 @@
 
 | CATCH RATE | FALSE BLOCK | STEP-UP | P95 |
 |---|---|---|---|
-| 100.0% | 0.0% | 21.2% | 0.329s |
+| 100.0% | 0.0% | 21.2% | 0.312s |
 
 ## Attack class breakdown
 
@@ -27,9 +27,9 @@
 
 | Configuration | Catch rate | False block | p95 |
 |---|---|---|---|
-| S1 only (limits, as per AP2) | 23.1% | 0.0% | 0.519s |
-| S1 + S3 | 42.3% | 0.0% | 0.295s |
-| S1 + S2 | 80.8% | 0.0% | 0.704s |
-| S1 + S2 + S3 (PRAMAN) | 100.0% | 0.0% | 0.354s |
+| S1 only (limits, as per AP2) | 23.1% | 0.0% | 0.445s |
+| S1 + S3 | 42.3% | 0.0% | 0.273s |
+| S1 + S2 | 80.8% | 0.0% | 0.500s |
+| S1 + S2 + S3 (PRAMAN) | 100.0% | 0.0% | 0.316s |
 
 ![Ablation catch rate](charts/ablation.png)

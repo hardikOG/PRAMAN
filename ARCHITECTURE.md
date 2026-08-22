@@ -127,10 +127,10 @@ purchase.
   auto-allowed, and above which it steps up.
 
 **Decision:** the third. `AUTO_STRIP_MAX_FRACTION=0.10` — an unrequested
-item under 10% of cart value is silently stripped and the purchase
-proceeds; at or above 10% it steps up. `apps/api/gateway/policy.py`
-implements the fusion; `PipelineThresholds` makes the number itself an env
-var, not a constant buried in logic.
+item at or under 10% of cart value (`fraction <= 0.10`, inclusive) is
+silently stripped and the purchase proceeds; strictly above 10% it steps
+up. `apps/api/gateway/policy.py` implements the fusion; `PipelineThresholds`
+makes the number itself an env var, not a constant buried in logic.
 
 **Tradeoffs:** 10% is a judgment call, not a derived constant — there's no
 labeled "correct" threshold, only a tradeoff between step-up rate (customer

@@ -7,7 +7,7 @@ temp-file ledger signing key — no live Postgres/Redis, no shared state with
 from __future__ import annotations
 
 import pytest
-from apps.api.db import Base, get_db_session
+from apps.api.db import Base, enable_sqlite_foreign_keys, get_db_session
 from apps.api.ledger.crypto import load_or_create_signing_key
 from apps.api.main import create_app
 from apps.api.routes import playground as playground_module
@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 @pytest.fixture
 async def client(tmp_path, monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    enable_sqlite_foreign_keys(engine)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     sessionmaker = async_sessionmaker(bind=engine, expire_on_commit=False)

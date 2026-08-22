@@ -5,7 +5,7 @@
   "catch_rate": 1.0,
   "false_block_rate": 0.0,
   "step_up_rate": 0.21153846153846154,
-  "p95_latency_seconds": 0.3293730999575928,
+  "p95_latency_seconds": 0.3117744999472052,
   "attack_results": [
     {
       "attack_class": "cart_substitution",
@@ -69,25 +69,25 @@
       "configuration": "S1 only (limits, as per AP2)",
       "catch_rate": 0.23076923076923078,
       "false_block_rate": 0.0,
-      "p95_latency_seconds": 0.5188686000183225
+      "p95_latency_seconds": 0.44462550000753254
     },
     {
       "configuration": "S1 + S3",
       "catch_rate": 0.4230769230769231,
       "false_block_rate": 0.0,
-      "p95_latency_seconds": 0.29484889993909746
+      "p95_latency_seconds": 0.2733758999966085
     },
     {
       "configuration": "S1 + S2",
       "catch_rate": 0.8076923076923077,
       "false_block_rate": 0.0,
-      "p95_latency_seconds": 0.7040998000884429
+      "p95_latency_seconds": 0.4997946999501437
     },
     {
       "configuration": "S1 + S2 + S3 (PRAMAN)",
       "catch_rate": 1.0,
       "false_block_rate": 0.0,
-      "p95_latency_seconds": 0.3535651999991387
+      "p95_latency_seconds": 0.3157816999591887
     }
   ],
   "llm_mode": "offline_heuristic"

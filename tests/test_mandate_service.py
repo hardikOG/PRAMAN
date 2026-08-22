@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from apps.api.db import Base
+from apps.api.db import Base, enable_sqlite_foreign_keys
 from apps.api.ledger.crypto import generate_signing_key
 from apps.api.mandates.service import (
     fetch_mandate,
@@ -26,6 +26,7 @@ from tests.test_constraint_extraction import _GATE_INTENT, _GATE_LLM_RESPONSE
 @pytest.fixture
 async def session():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    enable_sqlite_foreign_keys(engine)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     sessionmaker = async_sessionmaker(bind=engine, expire_on_commit=False)
@@ -110,6 +111,7 @@ async def test_revoking_does_not_itself_invalidate_the_signature(session) -> Non
     `revoked`, masking the real reason."""
     mandate, _key = await _issue(session)
     revoked = await revoke(session, mandate.id, datetime.now(UTC))
+    assert revoked is not None
     assert verify_mandate_signature(revoked) is True
 
 
@@ -126,4 +128,6 @@ async def test_revoke_is_idempotent(session) -> None:
     first = await revoke(session, mandate.id, at_1)
     second = await revoke(session, mandate.id, at_2)
 
+    assert first is not None
+    assert second is not None
     assert first.revoked_at == second.revoked_at

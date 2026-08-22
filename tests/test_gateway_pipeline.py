@@ -9,10 +9,11 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from apps.api.db import Base
+from apps.api.db import Base, enable_sqlite_foreign_keys
 from apps.api.gateway.pipeline import PipelineThresholds, authorize, quote_to_cart
 from apps.api.ledger.bundle import verify_proof_bundle
 from apps.api.ledger.crypto import generate_signing_key, public_key_b64
+from apps.api.mandates.repository import save_mandate
 from apps.api.mandates.service import sign_mandate
 from apps.api.models.schemas import (
     Constraint,
@@ -65,6 +66,7 @@ def _sock_item() -> _QuoteItem:
 @pytest.fixture
 async def session():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    enable_sqlite_foreign_keys(engine)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     sessionmaker = async_sessionmaker(bind=engine, expire_on_commit=False)
@@ -141,6 +143,53 @@ def _mandate(key) -> Mandate:
     return sign_mandate(unsigned, key)
 
 
+def _mandate_with_no_attribute_constraint(key) -> Mandate:
+    """A mandate for a perfectly plausible intent ("running shoes under
+    ₹4000") that never mentions size, colour, or any other attribute — so
+    it carries only MAX_PRICE and CATEGORY constraints, nothing S2's
+    target-item identification can use to narrow a multi-item cart down to
+    one line item."""
+    now = datetime.now(UTC)
+    unsigned = Mandate(
+        id=str(uuid.uuid4()),
+        principal_id="user-1",
+        agent_id="agent-2",
+        public_key=public_key_b64(key),
+        signature="",
+        budget_total_paise=400_000,
+        budget_used_paise=0,
+        per_txn_cap_paise=400_000,
+        merchant_allowlist=["kicks-co"],
+        category_allowlist=["footwear.running"],
+        velocity=VelocityLimits(max_txn_per_hour=3, max_txn_per_day=10),
+        auto_strip_unrequested=True,
+        intent_text="running shoes under ₹4000",
+        constraints=[
+            Constraint(
+                id="c1",
+                type=ConstraintType.MAX_PRICE,
+                field="price",
+                operator="<=",
+                value="400000",
+                is_deterministic=True,
+                source_span="under ₹4000",
+            ),
+            Constraint(
+                id="c2",
+                type=ConstraintType.CATEGORY,
+                field="category",
+                operator="==",
+                value="footwear.running",
+                is_deterministic=True,
+                source_span="running shoes",
+            ),
+        ],
+        issued_at=now,
+        expires_at=now + timedelta(days=7),
+    )
+    return sign_mandate(unsigned, key)
+
+
 def _honest_llm() -> FakeLLMClient:
     def respond(_system: str, user: str) -> dict:
         if "field: size" in user:
@@ -156,6 +205,7 @@ async def test_honest_purchase_allows_and_produces_a_verifiable_bundle(session, 
     principal_key = generate_signing_key()
     ledger_key = generate_signing_key()
     mandate = _mandate(principal_key)
+    await save_mandate(session, mandate)
     cart = quote_to_cart(
         cart_id=str(uuid.uuid4()),
         mandate_id=mandate.id,
@@ -187,6 +237,7 @@ async def test_silent_upsell_is_auto_stripped_and_still_allows(session, redis) -
     principal_key = generate_signing_key()
     ledger_key = generate_signing_key()
     mandate = _mandate(principal_key)
+    await save_mandate(session, mandate)
     cart = quote_to_cart(
         cart_id=str(uuid.uuid4()),
         mandate_id=mandate.id,
@@ -213,10 +264,61 @@ async def test_silent_upsell_is_auto_stripped_and_still_allows(session, redis) -
     assert result.proof_bundle is not None
 
 
+async def test_unrequested_second_item_steps_up_when_mandate_has_no_attribute_constraint(
+    session, redis
+) -> None:
+    """Regression: a mandate for "running shoes under ₹4000" (no size,
+    colour, or other attribute mentioned — MAX_PRICE + CATEGORY only) faced
+    with a cart containing two different same-category shoes has nothing to
+    identify a single target item with. Before this fix, MAX_PRICE fell
+    back to the cart *total* (still under budget) and CATEGORY fell back to
+    "any item matches" (true for the first one) — both rule constraints
+    were satisfied, `detect_unrequested_items` correctly refused to guess
+    and flagged nothing, and the entirely unrequested second shoe sailed
+    through as a silent, ALLOW-ed upsell. It must STEP_UP instead."""
+    principal_key = generate_signing_key()
+    ledger_key = generate_signing_key()
+    mandate = _mandate_with_no_attribute_constraint(principal_key)
+    await save_mandate(session, mandate)
+    cart = quote_to_cart(
+        cart_id=str(uuid.uuid4()),
+        mandate_id=mandate.id,
+        merchant_id="kicks-co",
+        quote_id="qte-1",
+        items=[
+            _shoe_item(price=200_000),
+            _QuoteItem(
+                "NR-EXTRA", "Extra Runner", "footwear.running", 150_000, 1, {"size": "UK10"}
+            ),
+        ],
+        currency="INR",
+    )
+
+    def respond(_system: str, user: str) -> dict:
+        raise AssertionError(f"no LLM-adjudicated constraint should fire here: {user}")
+
+    result = await authorize(
+        session=session,
+        redis=redis,
+        mandate=mandate,
+        cart=cart,
+        llm_client=FakeLLMClient(respond),
+        ledger_signing_key=ledger_key,
+        payment_executor=DeterministicExecutor(),
+        thresholds=_THRESHOLDS,
+    )
+
+    assert result.decision.outcome == DecisionOutcome.STEP_UP
+    assert result.decision.stripped_items == []
+    assert result.proof_bundle is None
+    assert result.step_up_token is not None
+
+
 async def test_cart_substitution_wrong_size_blocks(session, redis) -> None:
     principal_key = generate_signing_key()
     ledger_key = generate_signing_key()
     mandate = _mandate(principal_key)
+    await save_mandate(session, mandate)
     cart = quote_to_cart(
         cart_id=str(uuid.uuid4()),
         mandate_id=mandate.id,
@@ -250,6 +352,7 @@ async def test_merchant_substitution_blocks_before_faithfulness_even_runs(sessio
     principal_key = generate_signing_key()
     ledger_key = generate_signing_key()
     mandate = _mandate(principal_key)
+    await save_mandate(session, mandate)
     cart = quote_to_cart(
         cart_id=str(uuid.uuid4()),
         mandate_id=mandate.id,
@@ -280,6 +383,7 @@ async def test_undetermined_constraint_steps_up_and_issues_a_token(session, redi
     principal_key = generate_signing_key()
     ledger_key = generate_signing_key()
     mandate = _mandate(principal_key)
+    await save_mandate(session, mandate)
     cart = quote_to_cart(
         cart_id=str(uuid.uuid4()),
         mandate_id=mandate.id,
@@ -312,6 +416,7 @@ async def test_bundle_signature_verifies_against_the_correct_public_key_only(
     principal_key = generate_signing_key()
     ledger_key = generate_signing_key()
     mandate = _mandate(principal_key)
+    await save_mandate(session, mandate)
     cart = quote_to_cart(
         cart_id=str(uuid.uuid4()),
         mandate_id=mandate.id,

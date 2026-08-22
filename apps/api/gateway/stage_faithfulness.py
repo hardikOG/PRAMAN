@@ -251,6 +251,34 @@ def evaluate_faithfulness(
         else:
             findings.append(_evaluate_rule_constraint(constraint, cart, target_item))
 
+    if target_item is None and len(cart.items) > 1:
+        # Ambiguous *and* more than one line item: rule constraints above
+        # fell back to cart-aggregate checks (total price, "any item
+        # matches category") specifically because there's no single item to
+        # check against — but that fallback is silent about every item
+        # *other* than whichever one happened to satisfy it, and
+        # `detect_unrequested_items` below correctly refuses to guess which
+        # items are unrequested. Without this finding, a cart with no
+        # ATTRIBUTE/MUST_HAVE/MUST_NOT_HAVE constraint at all (a perfectly
+        # plausible intent like "running shoes under ₹4000", no size
+        # mentioned) plus a second, entirely unrequested same-category item
+        # would satisfy every rule check and flag nothing as unrequested —
+        # a silent upsell S2 was specifically built to catch. Surfacing
+        # UNDETERMINED here routes it to STEP_UP via S4's existing
+        # precedence instead of silently ALLOW.
+        findings.append(
+            Finding(
+                constraint_id="_cart_ambiguity",
+                verdict=Verdict.UNDETERMINED,
+                evidence=(
+                    f"cart has {len(cart.items)} items and no constraint narrows down which "
+                    "one the intent is about — cannot verify every item was requested"
+                ),
+                confidence=0.0,
+                adjudicator=Adjudicator.RULE,
+            )
+        )
+
     unrequested = detect_unrequested_items(cart, target_item)
     return FaithfulnessResult(
         findings=findings,

@@ -61,10 +61,13 @@ def public_key_b64(key: Ed25519PrivateKey | Ed25519PublicKey) -> str:
 def public_key_from_b64(encoded: str) -> Ed25519PublicKey:
     """Reconstruct a public key from `public_key_b64`'s output.
 
-    Failure cases: raises `ValueError` if `encoded` does not decode to
-        exactly 32 bytes.
+    Failure cases: raises `ValueError` if `encoded` is not valid base64 (as
+        opposed to silently discarding invalid characters, which could
+        otherwise coerce a malformed or truncated key string into an
+        unrelated-but-still-32-byte key instead of failing loudly), or does
+        not decode to exactly 32 bytes.
     """
-    raw = base64.b64decode(encoded)
+    raw = base64.b64decode(encoded, validate=True)
     return Ed25519PublicKey.from_public_bytes(raw)
 
 

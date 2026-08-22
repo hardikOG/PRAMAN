@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from apps.api.db import Base
+from apps.api.db import Base, enable_sqlite_foreign_keys
 from apps.api.models.tables import CartItemRow, CartRow, ConstraintRow, MandateRow
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 @pytest.fixture
 async def sqlite_session():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    enable_sqlite_foreign_keys(engine)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -107,7 +108,13 @@ async def test_cart_with_items_roundtrips_on_sqlite(sqlite_session) -> None:
             )
         ],
     )
-    sqlite_session.add_all([mandate, cart])
+    # The mandate must exist before the cart: `carts.mandate_id` is a real
+    # foreign key, and `add_all([mandate, cart])` in one commit doesn't
+    # guarantee insert order between two rows with no ORM `relationship()`
+    # connecting them (unlike, say, `CartRow.items`, which does have one).
+    sqlite_session.add(mandate)
+    await sqlite_session.flush()
+    sqlite_session.add(cart)
     await sqlite_session.commit()
 
     fetched = await sqlite_session.get(CartRow, "cart-1")

@@ -238,6 +238,7 @@ async def authorize(
 
     proof_bundle: ProofBundle | None = None
     step_up_token: str | None = None
+    payment = None
 
     if policy.outcome == DecisionOutcome.ALLOW:
         stripped_value = sum(
@@ -255,6 +256,30 @@ async def authorize(
             update={"razorpay_order_id": order.order_id, "razorpay_payment_id": payment.payment_id}
         )
 
+    elif policy.outcome == DecisionOutcome.STEP_UP:
+        step_up_token = await issue_step_up_token(
+            redis, decision.id, ttl_seconds=thresholds.step_up_ttl_seconds
+        )
+
+    # Cart and decision must be persisted *before* the proof bundle: a
+    # ProofBundleRow's `decision_id` (and a DecisionRow's own `cart_id`) is a
+    # real foreign key, and inserting it first — as this used to do — only
+    # ever "worked" because SQLite doesn't enforce foreign keys by default.
+    # Against Postgres (or SQLite with `PRAGMA foreign_keys=ON`, which this
+    # project's own engine now sets — see apps/api/db.py), this ordering
+    # failed the FK constraint on every single ALLOW.
+    #
+    # A replay is provably a resubmission of a cart id already persisted by
+    # the original attempt — re-inserting it would violate the cart table's
+    # primary key. Only the decision (a fresh row per attempt) is recorded,
+    # so a replay attempt still shows up in the ledger, just without trying
+    # to duplicate the cart it's replaying.
+    if s1.reason_code != "replay_detected":
+        await save_cart(session, cart)
+    await save_decision(session, decision)
+
+    if policy.outcome == DecisionOutcome.ALLOW:
+        assert payment is not None  # narrows for mypy; always set in this branch above
         prev_hash = await get_latest_payload_hash(session)
         payload = ProofBundlePayload(
             mandate_snapshot=mandate,
@@ -265,8 +290,8 @@ async def authorize(
             behaviour_signals=s3.signals,
             decision=decision,
             razorpay_ids=RazorpayIds(
-                order_id=order.order_id,
-                payment_id=payment.payment_id,
+                order_id=decision.razorpay_order_id,
+                payment_id=decision.razorpay_payment_id,
                 captured_at=payment.captured_at,
             ),
         )
@@ -277,20 +302,6 @@ async def authorize(
             signing_key=ledger_signing_key,
         )
         await save_proof_bundle(session, proof_bundle)
-
-    elif policy.outcome == DecisionOutcome.STEP_UP:
-        step_up_token = await issue_step_up_token(
-            redis, decision.id, ttl_seconds=thresholds.step_up_ttl_seconds
-        )
-
-    # A replay is provably a resubmission of a cart id already persisted by
-    # the original attempt — re-inserting it would violate the cart table's
-    # primary key. Only the decision (a fresh row per attempt) is recorded,
-    # so a replay attempt still shows up in the ledger, just without trying
-    # to duplicate the cart it's replaying.
-    if s1.reason_code != "replay_detected":
-        await save_cart(session, cart)
-    await save_decision(session, decision)
 
     return AuthorizationResult(
         decision=decision, proof_bundle=proof_bundle, step_up_token=step_up_token

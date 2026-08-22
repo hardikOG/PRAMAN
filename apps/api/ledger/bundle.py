@@ -37,14 +37,21 @@ def build_proof_bundle(
         — the preceding ledger entry's `payload_hash` (or
         `ledger.chain.GENESIS_HASH`); `payload` — the immutable evidence;
         `signing_key` — the ledger's Ed25519 private key.
-    Outputs: a `ProofBundle` whose `payload_hash` commits to `prev_hash` and
-        `payload` (see chain.py), and whose `signature` is over that hash's
-        raw digest bytes (not its hex string) to keep the signed input
-        compact and unambiguous.
+    Outputs: a `ProofBundle` whose `payload_hash` commits to `prev_hash`,
+        `signed_at`, and `payload` together (see chain.py), and whose
+        `signature` is over that hash's raw digest bytes (not its hex
+        string) to keep the signed input compact and unambiguous.
+        `signed_at` is folded into the hashed envelope specifically because
+        it is a `ProofBundle`-level field, not a `payload` field (per the
+        fixed schema) — committing only to `payload` would leave the
+        bundle's claimed signing time editable with no detectable effect on
+        verification, which defeats its purpose as dispute evidence.
     Complexity: O(n) in the payload's size (one canonicalisation + hash).
     """
+    signed_at_value = signed_at or datetime.now(UTC)
     payload_json = payload.model_dump(mode="json")
-    payload_hash = compute_entry_hash(prev_hash, payload_json)
+    hashed_envelope = {"signed_at": signed_at_value.isoformat(), "payload": payload_json}
+    payload_hash = compute_entry_hash(prev_hash, hashed_envelope)
     signature = sign(signing_key, bytes.fromhex(payload_hash))
 
     return ProofBundle(
@@ -53,7 +60,7 @@ def build_proof_bundle(
         prev_hash=prev_hash,
         payload_hash=payload_hash,
         signature=signature,
-        signed_at=signed_at or datetime.now(UTC),
+        signed_at=signed_at_value,
         payload=payload,
     )
 
@@ -63,17 +70,18 @@ def verify_proof_bundle(bundle: ProofBundle, public_key: Ed25519PublicKey) -> bo
     `prev_hash`, then verify the signature over that recomputed hash.
 
     Never trusts the stored `payload_hash` at face value — a bundle whose
-    payload was tampered with will recompute to a different hash and fail
-    here even if `payload_hash` itself was left untouched (and if
-    `payload_hash` *was* also tampered with to match, the signature check
+    payload *or* `signed_at` was tampered with will recompute to a different
+    hash and fail here even if `payload_hash` itself was left untouched (and
+    if `payload_hash` *was* also tampered with to match, the signature check
     below fails instead, since it verifies against the recomputed digest).
 
     Outputs: `True` iff both the hash and signature check out.
     Complexity: O(n) in the payload's size.
     """
     payload_json = bundle.payload.model_dump(mode="json")
-    if not verify_entry_hash(bundle.prev_hash, payload_json, bundle.payload_hash):
+    hashed_envelope = {"signed_at": bundle.signed_at.isoformat(), "payload": payload_json}
+    if not verify_entry_hash(bundle.prev_hash, hashed_envelope, bundle.payload_hash):
         return False
 
-    recomputed_hash = compute_entry_hash(bundle.prev_hash, payload_json)
+    recomputed_hash = compute_entry_hash(bundle.prev_hash, hashed_envelope)
     return verify(public_key, bytes.fromhex(recomputed_hash), bundle.signature)
