@@ -54,11 +54,7 @@ def _encode(value: JsonValue) -> str:
         return "[" + ",".join(_encode(item) for item in value) + "]"
     if isinstance(value, dict):
         items = sorted(value.items(), key=lambda kv: kv[0])
-        return (
-            "{"
-            + ",".join(f"{_encode_string(k)}:{_encode(v)}" for k, v in items)
-            + "}"
-        )
+        return "{" + ",".join(f"{_encode_string(k)}:{_encode(v)}" for k, v in items) + "}"
     raise TypeError(f"cannot canonicalise value of type {type(value).__name__}")
 
 

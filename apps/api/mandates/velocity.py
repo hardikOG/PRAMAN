@@ -78,9 +78,7 @@ async def check_velocity(
     hour_count = int(await redis.get(_hour_key(mandate_id, at)) or 0)
     day_count = int(await redis.get(_day_key(mandate_id, at)) or 0)
 
-    within_limits = (
-        hour_count < limits.max_txn_per_hour and day_count < limits.max_txn_per_day
-    )
+    within_limits = hour_count < limits.max_txn_per_hour and day_count < limits.max_txn_per_day
     return VelocityCheckResult(
         within_limits=within_limits, txn_count_hour=hour_count, txn_count_day=day_count
     )

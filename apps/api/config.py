@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     # S2 faithfulness stage
     faithfulness_min_confidence: float = 0.7
 
+    # S4 policy fusion
+    behaviour_step_up_threshold: float = 0.4
+
     # Crypto
     ledger_signing_key_path: str = ".keys/ledger_ed25519.pem"
 

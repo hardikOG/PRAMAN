@@ -17,6 +17,14 @@ htmlcov/
 .env
 .env.*
 !.env.example
+.keys/
+*.pem
+
+# Local demo artifacts (praman seed/demo — SQLite db, exported bundles)
+.local/
+demo_bundle.json
+*.db
+*.db-journal
 
 # Node / web
 node_modules/

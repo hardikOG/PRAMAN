@@ -18,3 +18,4 @@ razorpay>=1.4
 mcp>=1.1
 pyyaml>=6.0
 typer>=0.15
+fakeredis>=2.26

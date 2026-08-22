@@ -47,9 +47,7 @@ def load_or_create_signing_key(path: str | Path) -> Ed25519PrivateKey:
 
     key = generate_signing_key()
     key_path.parent.mkdir(parents=True, exist_ok=True)
-    key_path.write_bytes(
-        key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
-    )
+    key_path.write_bytes(key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()))
     return key
 
 

@@ -28,7 +28,7 @@ from apps.api.models.schemas import (
 )
 
 
-def _make_payload(*, price_paise: int = 349_900) -> ProofBundlePayload:
+def _make_payload(*, price_paise: int = 349_900, decision_id: str = "dec-1") -> ProofBundlePayload:
     now = datetime.now(UTC)
     mandate = Mandate(
         id="mnd-1",
@@ -76,7 +76,7 @@ def _make_payload(*, price_paise: int = 349_900) -> ProofBundlePayload:
         total_paise=price_paise,
     )
     decision = Decision(
-        id="dec-1",
+        id=decision_id,
         cart_id=cart.id,
         outcome=DecisionOutcome.ALLOW,
         reason_code="all_constraints_satisfied",
@@ -135,9 +135,7 @@ def test_chain_of_three_bundles_verifies() -> None:
     for bundle in bundles:
         assert verify_proof_bundle(bundle, key.public_key()) is True
 
-    entries = [
-        (b.prev_hash, b.payload.model_dump(mode="json"), b.payload_hash) for b in bundles
-    ]
+    entries = [(b.prev_hash, b.payload.model_dump(mode="json"), b.payload_hash) for b in bundles]
     assert verify_chain(entries) is True
 
 

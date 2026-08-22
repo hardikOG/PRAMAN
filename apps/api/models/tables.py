@@ -155,9 +155,7 @@ class DecisionRow(Base):
     stage_latencies_ms: Mapped[dict[str, float]] = mapped_column(PortableJSON, default=dict)
     razorpay_order_id: Mapped[str | None] = mapped_column(default=None)
     razorpay_payment_id: Mapped[str | None] = mapped_column(default=None)
-    created_at: Mapped[datetime] = mapped_column(
-        UTCDateTime, server_default=func.now(), index=True
-    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=func.now(), index=True)
 
     findings: Mapped[list[FindingRow]] = relationship(
         back_populates="decision", cascade="all, delete-orphan"
@@ -198,9 +196,7 @@ class ProofBundleRow(Base):
     __tablename__ = "proof_bundles"
 
     id: Mapped[str] = mapped_column(primary_key=True)
-    decision_id: Mapped[str] = mapped_column(
-        ForeignKey("decisions.id"), unique=True, index=True
-    )
+    decision_id: Mapped[str] = mapped_column(ForeignKey("decisions.id"), unique=True, index=True)
     prev_hash: Mapped[str] = mapped_column(Text)
     payload_hash: Mapped[str] = mapped_column(Text, index=True)
     signature: Mapped[str] = mapped_column(Text)

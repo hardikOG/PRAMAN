@@ -15,6 +15,7 @@ import hashlib
 import json
 import random
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
@@ -95,9 +96,7 @@ class AnthropicLLMClient:
                     system=system,
                     messages=[{"role": "user", "content": user}],
                 )
-                text = "".join(
-                    block.text for block in response.content if block.type == "text"
-                )
+                text = "".join(block.text for block in response.content if block.type == "text")
                 parsed = json.loads(text)
                 cache_path.write_text(json.dumps(parsed), encoding="utf-8")
                 return parsed
@@ -119,3 +118,31 @@ class AnthropicLLMClient:
                     time.sleep((2**attempt) + random.uniform(0, 0.5))
 
         raise LLMError(f"LLM call failed after {self._max_retries} attempts: {last_error}")
+
+
+class OfflineDemoLLMClient:
+    """A canned response (fixed, or computed per call by a callable), used
+    only by `praman demo`/`praman seed` when no `ANTHROPIC_API_KEY` is
+    configured, so the demo path still runs genuinely end to end rather than
+    failing at the first LLM call. The callable form is what lets one client
+    instance serve both constraint extraction and faithfulness adjudication
+    in the same demo run, routing on which system prompt it was called with.
+
+    This is not a test double (see `tests/fakes.py`, which is never used by
+    production code) — it's a documented, explicit offline mode analogous to
+    `DeterministicExecutor` for payments. Every call logs a warning so it is
+    never mistaken for a live result, and `apps/api/cli.py` only ever
+    constructs one when `Settings.llm_configured` is `False`.
+    """
+
+    def __init__(self, response: dict | Callable[[str, str], dict]) -> None:
+        self._response = response
+
+    def complete_json(self, *, system: str, user: str, max_tokens: int = 1024) -> dict:
+        logger.warning(
+            "praman.llm.offline_demo_mode",
+            note="no ANTHROPIC_API_KEY configured — returning a canned response, not a live result",
+        )
+        if callable(self._response):
+            return self._response(system, user)
+        return self._response

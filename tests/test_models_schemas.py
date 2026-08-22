@@ -44,9 +44,7 @@ def test_mandate_is_expired_false_before_expiry() -> None:
 
 def test_mandate_is_revoked_reflects_revoked_at() -> None:
     assert _mandate(expires_at=datetime.now(UTC), revoked_at=None).is_revoked is False
-    assert (
-        _mandate(expires_at=datetime.now(UTC), revoked_at=datetime.now(UTC)).is_revoked is True
-    )
+    assert _mandate(expires_at=datetime.now(UTC), revoked_at=datetime.now(UTC)).is_revoked is True
 
 
 def test_cart_item_line_total_paise() -> None:

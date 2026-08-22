@@ -49,9 +49,7 @@ def test_spec_confusable_pair_exists() -> None:
 
 def test_two_products_carry_injected_descriptions() -> None:
     injected = [
-        p
-        for p in CATALOG
-        if "SYSTEM" in p.description.upper() or "automatically" in p.description
+        p for p in CATALOG if "SYSTEM" in p.description.upper() or "automatically" in p.description
     ]
     assert len(injected) == 2
     assert {p.sku for p in injected} == {"SP-BLK", "INJ-GAITER"}

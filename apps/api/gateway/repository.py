@@ -1,0 +1,72 @@
+"""Persistence for carts and decisions — what the console (Phase 7) reads
+back for the live ledger feed and the proof inspector.
+"""
+
+from __future__ import annotations
+
+import uuid
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from apps.api.models.schemas import Cart, Decision
+from apps.api.models.tables import CartItemRow, CartRow, DecisionRow, FindingRow
+
+
+async def save_cart(session: AsyncSession, cart: Cart) -> None:
+    """Persist a cart and its line items. Complexity: O(k) in item count."""
+    session.add(
+        CartRow(
+            id=cart.id,
+            mandate_id=cart.mandate_id,
+            merchant_id=cart.merchant_id,
+            quote_id=cart.quote_id,
+            total_paise=cart.total_paise,
+            currency=cart.currency,
+            items=[
+                CartItemRow(
+                    id=str(uuid.uuid4()),
+                    sku=item.sku,
+                    name=item.name,
+                    description=item.description,
+                    unit_price_paise=item.unit_price_paise,
+                    qty=item.qty,
+                    attributes=item.attributes,
+                )
+                for item in cart.items
+            ],
+        )
+    )
+    await session.flush()
+
+
+async def save_decision(session: AsyncSession, decision: Decision) -> None:
+    """Persist a decision and its per-constraint findings.
+
+    Complexity: O(k) in finding count.
+    """
+    session.add(
+        DecisionRow(
+            id=decision.id,
+            cart_id=decision.cart_id,
+            outcome=decision.outcome.value,
+            reason_code=decision.reason_code,
+            behaviour_score=decision.behaviour_score,
+            behaviour_signals=decision.behaviour_signals,
+            stripped_items=decision.stripped_items,
+            stage_latencies_ms=decision.stage_latencies_ms,
+            razorpay_order_id=decision.razorpay_order_id,
+            razorpay_payment_id=decision.razorpay_payment_id,
+            findings=[
+                FindingRow(
+                    id=str(uuid.uuid4()),
+                    constraint_id=f.constraint_id,
+                    verdict=f.verdict.value,
+                    evidence=f.evidence,
+                    confidence=f.confidence,
+                    adjudicator=f.adjudicator.value,
+                )
+                for f in decision.findings
+            ],
+        )
+    )
+    await session.flush()
