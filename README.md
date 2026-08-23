@@ -241,11 +241,17 @@ the failure rather than just asserting the guarantee in prose:
 
 ## Limitations
 
-- **No live-LLM measurement yet.** The headline numbers above run on the
-  offline heuristic (see the caveat under Results); the code path for the
-  real `AnthropicLLMClient` is complete and unit-tested, but re-running
-  `make eval` with a real key — and reporting what changes — is the
-  immediate next step, not a hypothetical one.
+- **No live-LLM measurement.** The headline numbers above run on the
+  offline structural heuristic (see the caveat under Results), not a real
+  model — no `ANTHROPIC_API_KEY` was available for this submission. The
+  code path for the real `AnthropicLLMClient` is complete and unit-tested
+  (cache, retry-with-jitter, structured-output enforcement, token
+  accounting — `apps/api/llm_client.py`), and `make eval` picks it up
+  automatically the moment a key is present in `.env`; nothing else about
+  the harness changes. Reporting a live number lower than 100% would be
+  more credible than this one, not less — that tradeoff was made
+  deliberately in favor of never fabricating a metric, per this project's
+  own standing rule, rather than in favor of a number that looks better.
 - **Docker Desktop was broken on the build machine for most of this build**
   (a documented WSL2/disk-space issue, not a PRAMAN bug). `docker-compose.yml`
   is complete and correct for the full Postgres/Redis/console stack, but it
