@@ -43,9 +43,30 @@ export default function Playground() {
   const [confirming, setConfirming] = useState(false);
   const [confirmResult, setConfirmResult] = useState<StepUpConfirmResponse | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [waking, setWaking] = useState(false);
 
   useEffect(() => {
-    api.listPresets().then(setPresets).catch((e) => setError(String(e)));
+    let settled = false;
+    // Free-tier hosting (e.g. Render's free web services) spins the API
+    // down after 15 minutes idle; the first request wakes it and can take
+    // 30-60s. Only show this after a delay, so it never flashes on a local
+    // dev server that responds in milliseconds.
+    const wakeTimer = setTimeout(() => {
+      if (!settled) setWaking(true);
+    }, 3000);
+    api
+      .listPresets()
+      .then(setPresets)
+      .catch((e) => setError(String(e)))
+      .finally(() => {
+        settled = true;
+        clearTimeout(wakeTimer);
+        setWaking(false);
+      });
+    return () => {
+      settled = true;
+      clearTimeout(wakeTimer);
+    };
   }, []);
 
   async function run() {
@@ -94,6 +115,12 @@ export default function Playground() {
           <p className="mb-3 font-body text-sm text-muted">
             "running shoes under ₹4000, size 9, not white"
           </p>
+          {waking && presets.length === 0 && (
+            <div className="mb-3 rounded border border-amber/40 bg-ink p-3 text-xs text-amber">
+              Connecting to PRAMAN Gateway… backend may take up to a minute
+              to wake on free-tier infrastructure.
+            </div>
+          )}
           <div className="space-y-2">
             {presets.map((p) => (
               <button
