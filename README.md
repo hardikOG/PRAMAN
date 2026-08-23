@@ -22,11 +22,12 @@ once:
    decline agent traffic wholesale.
 3. **Nobody checks whether the agent bought the right thing.** Every mandate
    spec in flight today (AP2, ACP, x402, NPCI's UAP) constrains *limits* —
-   amount, merchant, expiry. None of them verify the cart the agent
-   assembled actually satisfies the intent the human expressed. An agent
-   that hallucinates a SKU, silently accepts an upsell, buys the wrong size,
-   or gets prompt-injected by a product page sails through every limit
-   check in existence today, because ₹3,499 is under the ₹4,000 cap.
+   amount, merchant, expiry. PRAMAN adds an explicit intent-to-cart
+   faithfulness layer that isn't captured by simple amount/merchant/expiry
+   constraints: an agent that hallucinates a SKU, silently accepts an
+   upsell, buys the wrong size, or gets prompt-injected by a product page
+   can still satisfy every limit check in existence today, because ₹3,499
+   is under the ₹4,000 cap regardless of what's actually in the cart.
 
 **The thesis:** merchants block agent traffic because agent risk is
 unquantifiable. PRAMAN makes it quantifiable — it independently verifies
@@ -34,6 +35,13 @@ that the cart matches the human's stated intent, constraint by constraint,
 before money moves, and emits a hash-chained, signed evidence bundle for
 every decision so the merchant has something to hand an issuer in a
 dispute.
+
+**In one example:** a user authorizes "running shoes, size 9, under
+₹4,000." The agent builds a ₹3,499 cart — containing size 10.
+Amount-based authorization alone still allows it: ₹3,499 is under the cap,
+full stop. PRAMAN's S2 stage detects the intent/cart mismatch before
+payment moves and blocks it, producing a signed proof of exactly what was
+checked and why.
 
 ## Architecture
 
@@ -130,7 +138,11 @@ and 260 adversarial across 8 attack classes. Full breakdown in
 
 | Catch rate | False block | Step-up rate | p95 latency |
 |---|---|---|---|
-| **100.0%** | **0.0%** | 21.2% | 0.312s |
+| **100.0% offline-suite catch rate** | **0.0%** | 21.2% | 0.312s |
+
+S2 uses a deterministic structural heuristic when no LLM API key is
+configured (see the caveat immediately below); live-LLM results, when run,
+are reported separately rather than folded into this number.
 
 **Ablation — what each stage actually contributes:**
 
@@ -173,6 +185,15 @@ key configured). `ruff` and `mypy` clean. Gateway + ledger coverage: 95%.
 
 Ninety-second walkthrough: [`docs/screenshots/playground_demo.gif`](docs/screenshots/playground_demo.gif).
 
+**A 3-minute live demo, in order:** in the Playground, run **Honest
+purchase** (S1/S2/S3 all clear → ALLOW → real captured payment → signed
+proof bundle), then **Cart substitution (size)** (S2 catches the wrong
+size → BLOCK, no payment, no proof-of-ALLOW to fabricate one with), then
+**"Uncertain — needs a human"** (an add-on worth 31% of the cart is too
+large to auto-strip → STEP_UP → click *Confirm as human* → a *new* ALLOW
+decision and proof bundle appear, the original STEP_UP entry directly above
+it untouched). One mandate, one intent, three outcomes, one proof chain.
+
 ## Repo layout
 
 ```
@@ -186,9 +207,37 @@ tests/                pytest — 95% coverage on gateway/ and ledger/
 docs/                 ARCHITECTURE.md, SUBMISSION.md, screenshots, this README
 ```
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the five hardest design calls
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the six hardest design calls
 and why they landed the way they did, and [`PRAMAN_BUILD.md`](PRAMAN_BUILD.md)
 for the original build spec.
+
+## Failure handling
+
+Three specific guarantees, each backed by a test that actually simulates
+the failure rather than just asserting the guarantee in prose:
+
+- **LLM unavailable or timed out → never ALLOW.** `_evaluate_llm_constraint`
+  catches `LLMError` (not just a malformed response) and downgrades to
+  `UNDETERMINED`, which fuses to STEP_UP/BLOCK via S4's existing
+  precedence — an outage degrades to "ask a human," never to a silent
+  approval. `test_llm_unavailable_or_timeout_becomes_undetermined_never_allow`.
+- **Redis unavailable → fails closed, before any write.** S1's replay guard
+  is the first Redis call in the pipeline; a connection failure there
+  raises immediately — no decision is constructed, no DB row written, no
+  payment captured. This is a hard failure, not a graceful BLOCK decision;
+  it is still, in the sense that matters, fail-closed: an outage cannot
+  result in an authorized payment.
+- **Payment captured, then proof persistence fails.** There is no
+  distributed transaction between Razorpay and this database —
+  `capture_payment` is a real, irreversible external side effect this
+  process cannot roll back. `authorize()` commits the decision (with the
+  real order/payment ids already attached) to the database *before*
+  attempting to canonicalise, sign, and persist the proof bundle, so a
+  failure at that last step can never leave a captured payment with *zero*
+  local record of it. It can leave an ALLOW decision with no proof bundle
+  yet — a real, narrow, honestly-documented gap, not a solved one; there is
+  no outbox/retry mechanism to backfill the missing bundle today.
+  `test_decision_and_payment_survive_a_proof_bundle_save_failure`.
 
 ## Limitations
 
@@ -207,15 +256,14 @@ for the original build spec.
 - **One demo merchant, one catalog, one currency.** Multi-merchant and
   multi-currency are straightforward extensions of the existing schema, not
   attempted here for scope reasons.
-- **STEP_UP issues a token but nothing redeems it yet.** `issue_step_up_token`
-  / `redeem_step_up_token` (`apps/api/gateway/step_up.py`) are implemented
-  and unit-tested — single-use via Redis `GETDEL`, TTL-bound — but no route
-  or console button actually calls `redeem_step_up_token`. A STEP_UP
-  decision today is a dead end: no SMS/push/email integration, and no
-  confirm-and-complete-the-payment endpoint either. Building that safely
-  (it has to capture payment exactly once and emit a new proof bundle
-  without mutating the original, already-persisted STEP_UP decision) is the
-  next concrete piece of work, not a hypothetical one.
+- **STEP_UP has no SMS/push/email integration.** The confirm-and-pay flow
+  itself is complete: `POST /decisions/step-up/confirm` redeems the token
+  (single-use, Redis `GETDEL`), captures payment exactly once, and emits a
+  *new* ALLOW decision plus a *new* signed proof bundle — the original
+  STEP_UP decision is never mutated (see `gateway.pipeline.confirm_step_up`
+  and the "Uncertain — needs a human" preset in the console). What's
+  missing is only the notification channel that would hand the human that
+  link outside the console itself.
 - **The behaviour-anomaly stage (S3) is threshold-based, not learned.** It
   catches the two attack classes in this suite deliberately designed to look
   clean at the single-request level, but it is not an anomaly-detection

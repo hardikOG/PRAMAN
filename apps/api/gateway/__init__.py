@@ -10,8 +10,10 @@ from apps.api.gateway.behaviour_events import (
 )
 from apps.api.gateway.pipeline import (
     AuthorizationResult,
+    ConfirmStepUpResult,
     PipelineThresholds,
     authorize,
+    confirm_step_up,
     quote_to_cart,
 )
 from apps.api.gateway.policy import PolicyResult, fuse_decision
@@ -25,6 +27,7 @@ __all__ = [
     "AgentEvent",
     "AuthorizationResult",
     "BehaviourResult",
+    "ConfirmStepUpResult",
     "FaithfulnessResult",
     "MandateStageResult",
     "PipelineThresholds",
@@ -32,6 +35,7 @@ __all__ = [
     "authorize",
     "cart_signature",
     "check_and_mark_seen",
+    "confirm_step_up",
     "evaluate_behaviour",
     "evaluate_faithfulness",
     "evaluate_mandate",

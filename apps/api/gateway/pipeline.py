@@ -21,14 +21,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.gateway.behaviour_events import cart_signature, record_agent_event
 from apps.api.gateway.policy import fuse_decision
-from apps.api.gateway.repository import save_cart, save_decision
+from apps.api.gateway.repository import (
+    cart_from_row,
+    findings_from_rows,
+    get_decision,
+    save_cart,
+    save_decision,
+)
 from apps.api.gateway.stage_behaviour import BehaviourResult, evaluate_behaviour
 from apps.api.gateway.stage_faithfulness import FaithfulnessResult, evaluate_faithfulness
 from apps.api.gateway.stage_mandate import evaluate_mandate
-from apps.api.gateway.step_up import issue_step_up_token
+from apps.api.gateway.step_up import issue_step_up_token, redeem_step_up_token
 from apps.api.ledger.bundle import build_proof_bundle
 from apps.api.ledger.repository import get_latest_payload_hash, save_proof_bundle
 from apps.api.llm_client import LLMClient
+from apps.api.mandates.service import fetch_mandate
 from apps.api.mandates.velocity import record_transaction
 from apps.api.models.schemas import (
     Cart,
@@ -94,6 +101,17 @@ class AuthorizationResult:
     decision: Decision
     proof_bundle: ProofBundle | None
     step_up_token: str | None
+
+
+@dataclass(frozen=True)
+class ConfirmStepUpResult:
+    """What `confirm_step_up()` produces: either the new ALLOW decision and
+    its proof bundle, or a reason the token couldn't be redeemed."""
+
+    ok: bool
+    reason: str
+    decision: Decision | None = None
+    proof_bundle: ProofBundle | None = None
 
 
 def quote_to_cart(
@@ -279,6 +297,20 @@ async def authorize(
     await save_decision(session, decision)
 
     if policy.outcome == DecisionOutcome.ALLOW:
+        # Committed *before* building the proof bundle, deliberately: a real
+        # payment was just captured via `payment_executor` (an external,
+        # irreversible side effect this process cannot roll back), and this
+        # decision — with the real Razorpay order/payment ids already on it
+        # — is the only local record of that fact until the proof bundle
+        # exists too. If canonicalising/signing/persisting the bundle fails
+        # after this point, the transaction that would otherwise have rolled
+        # back and silently *un-recorded a payment that already happened* no
+        # longer can — the decision survives, findable, captured, just
+        # without a proof bundle yet. This is a mitigation, not a solved
+        # problem: there is still no distributed-transaction guarantee
+        # between Razorpay and this database, and a bundle-less ALLOW
+        # decision is a real, if narrow, gap — see README's Limitations.
+        await session.commit()
         assert payment is not None  # narrows for mypy; always set in this branch above
         prev_hash = await get_latest_payload_hash(session)
         payload = ProofBundlePayload(
@@ -305,4 +337,102 @@ async def authorize(
 
     return AuthorizationResult(
         decision=decision, proof_bundle=proof_bundle, step_up_token=step_up_token
+    )
+
+
+async def confirm_step_up(
+    *,
+    session: AsyncSession,
+    redis: Redis,
+    token: str,
+    ledger_signing_key: Ed25519PrivateKey,
+    payment_executor: PaymentExecutor,
+) -> ConfirmStepUpResult:
+    """Redeem a human's confirmation of a STEP_UP decision: capture payment
+    for the originally-flagged cart and emit a *new* ALLOW decision plus a
+    *new* signed proof bundle, without ever mutating the original STEP_UP
+    decision row.
+
+    S1-S4 do not re-run here — the human confirming is the "uncertain, not
+    wrong" signal S4 was already waiting on (see policy.py); this function's
+    only job is executing the payment that was withheld pending exactly that
+    confirmation, and recording it. The new decision's `reason_code`
+    (`step_up_confirmed:<original_decision_id>`) and the ledger's own
+    `prev_hash` chain are what link this event back to the original attempt
+    — the original stays exactly as it was decided, forever.
+
+    Complexity: O(1) Redis round trip (token redemption) + O(1) DB reads +
+        one payment-executor round trip + one canonicalise/hash/sign.
+    Failure cases: returns `ok=False` (never raises) for an invalid/expired/
+        already-redeemed token, a decision that isn't STEP_UP, or a mandate
+        that's gone missing — a confirmation attempt failing is reported,
+        not crashed. Propagates whatever the payment executor raises on
+        capture failure, same as `authorize()`.
+    """
+    decision_id = await redeem_step_up_token(redis, token)
+    if decision_id is None:
+        return ConfirmStepUpResult(ok=False, reason="invalid_or_expired_token")
+
+    original = await get_decision(session, decision_id)
+    if original is None:
+        return ConfirmStepUpResult(ok=False, reason="original_decision_not_found")
+    if original.outcome != DecisionOutcome.STEP_UP.value:
+        return ConfirmStepUpResult(ok=False, reason="decision_is_not_step_up")
+
+    cart = cart_from_row(original.cart)
+    mandate = await fetch_mandate(session, cart.mandate_id)
+    if mandate is None:
+        return ConfirmStepUpResult(ok=False, reason="mandate_not_found")
+
+    stripped_value = sum(
+        i.line_total_paise for i in cart.items if i.sku in original.stripped_items
+    )
+    payable_amount = cart.total_paise - stripped_value
+
+    order = await payment_executor.create_order(
+        amount_paise=payable_amount, currency=cart.currency, receipt=cart.id
+    )
+    payment = await payment_executor.capture_payment(
+        order_id=order.order_id, amount_paise=payable_amount
+    )
+
+    findings = findings_from_rows(original.findings)
+    new_decision = Decision(
+        id=str(uuid.uuid4()),
+        cart_id=cart.id,
+        outcome=DecisionOutcome.ALLOW,
+        reason_code=f"step_up_confirmed:{original.id}",
+        findings=findings,
+        behaviour_score=original.behaviour_score,
+        behaviour_signals=original.behaviour_signals,
+        stripped_items=original.stripped_items,
+        stage_latencies_ms={},
+        razorpay_order_id=order.order_id,
+        razorpay_payment_id=payment.payment_id,
+    )
+    await save_decision(session, new_decision)
+
+    prev_hash = await get_latest_payload_hash(session)
+    payload = ProofBundlePayload(
+        mandate_snapshot=mandate,
+        intent=mandate.intent_text,
+        cart=cart,
+        findings=findings,
+        behaviour_score=new_decision.behaviour_score,
+        behaviour_signals=new_decision.behaviour_signals,
+        decision=new_decision,
+        razorpay_ids=RazorpayIds(
+            order_id=order.order_id, payment_id=payment.payment_id, captured_at=payment.captured_at
+        ),
+    )
+    proof_bundle = build_proof_bundle(
+        decision_id=new_decision.id,
+        prev_hash=prev_hash,
+        payload=payload,
+        signing_key=ledger_signing_key,
+    )
+    await save_proof_bundle(session, proof_bundle)
+
+    return ConfirmStepUpResult(
+        ok=True, reason="confirmed", decision=new_decision, proof_bundle=proof_bundle
     )

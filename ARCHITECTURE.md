@@ -1,6 +1,6 @@
 # ARCHITECTURE.md
 
-Decision records for the five hardest calls in this build. Written after the
+Decision records for the six hardest calls in this build. Written after the
 fact, from the actual code and the actual bugs each decision produced or
 prevented — not aspirational design notes.
 
@@ -264,3 +264,58 @@ on a stored entry and see whether `payload_hash` verification catches it.
 This repo's does — `tests/` includes exactly that tamper test, and so does
 the demo flow in the README (mutate `demo_bundle.json` by one character,
 re-run `praman verify`, watch it fail).
+
+---
+
+### 6. Confirming a STEP_UP: a new decision, never a mutated one
+
+**Problem:** a STEP_UP decision defers judgment to a human, not to `authorize()`
+running again — but "the human said yes" still has to result in a captured
+payment and a signed proof bundle. The naive approach (flip the existing
+`DecisionRow.outcome` to `ALLOW` in place, then capture payment) is also the
+wrong one: it destroys the historical record of what the machine actually
+decided at the time, which is precisely the thing a proof-of-authorization
+system exists to preserve.
+
+**Options considered:**
+- Mutate the original `DecisionRow` in place: set `outcome=ALLOW`, fill in
+  the Razorpay ids, build a proof bundle referencing it.
+- Add a fourth decision state (e.g. `CONFIRMED`) distinct from `ALLOW`.
+- Leave the original STEP_UP decision exactly as persisted, and have
+  confirmation create an entirely new `Decision` (fresh id, `outcome=ALLOW`,
+  `reason_code=f"step_up_confirmed:{original.id}"`) with its own proof
+  bundle, referencing the original only by that reason code.
+
+**Decision:** the third (`gateway.pipeline.confirm_step_up`). The original
+decision is fetched, read-only, to reconstruct the cart, the stripped-item
+list, and the findings that made it uncertain in the first place — none of
+that is ever written back. Redeeming the step-up token
+(`redeem_step_up_token`, single-use via Redis `GETDEL`) is what makes
+"confirm exactly once" hold regardless of how many times the confirm
+endpoint is hit.
+
+**Tradeoffs:** two `DecisionRow`s now exist for one real-world purchase (the
+STEP_UP attempt and the confirmed ALLOW), which means the console's ledger
+feed shows both — a deliberate choice, not a UI quirk to hide: the STEP_UP
+row is itself evidence (this is what the system flagged and why), and
+erasing it would erase exactly the audit trail a dispute would need. The
+fixed schema (§6) has no field linking a decision to "the decision it
+confirms" beyond `reason_code`'s string convention — adding a real foreign
+key for this was considered and rejected as unnecessary schema churn for
+what a documented string prefix already expresses unambiguously.
+
+**Why the alternatives lost:** mutating the original in place means the
+system's own record of "what did S4 actually decide, and when" becomes
+whatever it was most recently overwritten to — useless as dispute evidence,
+since a merchant couldn't prove the human's confirmation was ever a distinct
+event from the algorithm's original uncertainty. A fourth `CONFIRMED` state
+was rejected because it duplicates what `ALLOW` + `reason_code` already
+says without ambiguity, and PRAMAN_BUILD.md's schema is fixed for good
+reason — adding a state needs a stronger justification than "feels more
+descriptive."
+
+**Interview talking point:** this is the same immutability principle as
+decision record #5, applied one level up — a proof system where confirming
+a purchase can quietly rewrite what was originally decided is not a proof
+system. The test that catches a regression here directly:
+`test_confirming_does_not_mutate_the_original_step_up_decision`.

@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from apps.api.models.schemas import Cart, Decision
+from apps.api.models.schemas import Adjudicator, Cart, CartItem, Decision, Finding, Verdict
 from apps.api.models.tables import CartItemRow, CartRow, DecisionRow, FindingRow
 
 
@@ -93,14 +93,63 @@ async def list_recent_decisions(session: AsyncSession, *, limit: int = 50) -> li
 
 
 async def get_decision(session: AsyncSession, decision_id: str) -> DecisionRow | None:
-    """Fetch one decision by id, with cart/items/findings eager-loaded —
-    what the console's proof inspector and decision-detail views need."""
+    """Fetch one decision by id, with cart/items/findings/proof_bundle
+    eager-loaded — what the console's proof inspector and decision-detail
+    views need, and what `pipeline.confirm_step_up` needs to rebuild the
+    originally-flagged cart without a lazy-load outside an async context."""
     result = await session.execute(
         select(DecisionRow)
         .where(DecisionRow.id == decision_id)
         .options(
             selectinload(DecisionRow.findings),
             selectinload(DecisionRow.cart).selectinload(CartRow.items),
+            selectinload(DecisionRow.proof_bundle),
         )
     )
     return result.scalar_one_or_none()
+
+
+def cart_from_row(row: CartRow) -> Cart:
+    """Reconstruct the domain `Cart` a persisted `CartRow` (with `.items`
+    eager-loaded — see `get_decision`) represents.
+
+    Used by step-up confirmation (`pipeline.confirm_step_up`), which has to
+    rebuild the originally-flagged cart to capture payment against it — the
+    only other places a `Cart` gets built are fresh, from a live quote, not
+    read back from storage.
+    """
+    return Cart(
+        id=row.id,
+        mandate_id=row.mandate_id,
+        merchant_id=row.merchant_id,
+        quote_id=row.quote_id,
+        items=[
+            CartItem(
+                sku=item.sku,
+                name=item.name,
+                description=item.description,
+                unit_price_paise=item.unit_price_paise,
+                qty=item.qty,
+                attributes=item.attributes,
+            )
+            for item in row.items
+        ],
+        total_paise=row.total_paise,
+        currency=row.currency,
+    )
+
+
+def findings_from_rows(rows: list[FindingRow]) -> list[Finding]:
+    """Reconstruct domain `Finding`s from persisted `FindingRow`s — the
+    STEP_UP decision's own findings, carried forward unchanged into the new
+    ALLOW decision `confirm_step_up` creates on confirmation."""
+    return [
+        Finding(
+            constraint_id=row.constraint_id,
+            verdict=Verdict(row.verdict),
+            evidence=row.evidence,
+            confidence=row.confidence,
+            adjudicator=Adjudicator(row.adjudicator),
+        )
+        for row in rows
+    ]

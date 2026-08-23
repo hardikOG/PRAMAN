@@ -37,6 +37,35 @@ def test_run_silent_upsell_preset_strips_and_allows(client) -> None:
     assert body["decision"]["stripped_items"] == ["SP-BLK"]
 
 
+def test_run_large_upsell_preset_steps_up(client) -> None:
+    response = client.post("/playground/run", json={"preset": "large_upsell"})
+    body = response.json()
+    assert body["decision"]["outcome"] == "STEP_UP"
+    assert body["proof_bundle"] is None
+    assert body["step_up_token"] is not None
+
+
+def test_confirming_the_large_upsell_step_up_allows_and_pays(client) -> None:
+    run = client.post("/playground/run", json={"preset": "large_upsell"})
+    token = run.json()["step_up_token"]
+
+    confirm = client.post("/decisions/step-up/confirm", json={"token": token})
+    assert confirm.status_code == 200
+    body = confirm.json()
+    assert body["decision"]["outcome"] == "ALLOW"
+    assert body["decision"]["razorpay_order_id"] is not None
+    assert body["proof_bundle"]["decision_id"] == body["decision"]["id"]
+
+    # single-use: redeeming the same token again is rejected, not repeated
+    replay = client.post("/decisions/step-up/confirm", json={"token": token})
+    assert replay.status_code == 409
+
+
+def test_confirming_an_unknown_token_returns_409(client) -> None:
+    response = client.post("/decisions/step-up/confirm", json={"token": "not-a-real-token"})
+    assert response.status_code == 409
+
+
 def test_run_merchant_substitution_blocks(client) -> None:
     response = client.post("/playground/run", json={"preset": "merchant_substitution"})
     body = response.json()

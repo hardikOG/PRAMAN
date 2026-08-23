@@ -10,6 +10,7 @@ import pytest
 from apps.api.db import Base, enable_sqlite_foreign_keys, get_db_session
 from apps.api.ledger.crypto import load_or_create_signing_key
 from apps.api.main import create_app
+from apps.api.routes import decisions as decisions_module
 from apps.api.routes import playground as playground_module
 from fakeredis import FakeAsyncRedis
 from fastapi.testclient import TestClient
@@ -29,15 +30,18 @@ async def client(tmp_path, monkeypatch):
             yield session
             await session.commit()
 
+    # One shared fake Redis and one shared ledger key across playground.py
+    # and decisions.py: a step-up token issued by /playground/run has to be
+    # redeemable by /decisions/step-up/confirm in the same test, and a
+    # confirmed decision's proof bundle has to chain against the same
+    # ledger key an earlier ALLOW in the same test signed with.
     redis = FakeAsyncRedis(decode_responses=True)
-    monkeypatch.setattr(playground_module, "get_redis", lambda: redis)
-
     key_path = tmp_path / "ledger_key.pem"
-    monkeypatch.setattr(
-        playground_module,
-        "load_or_create_signing_key",
-        lambda _p: load_or_create_signing_key(str(key_path)),
-    )
+    patched_key_loader = lambda _p: load_or_create_signing_key(str(key_path))  # noqa: E731
+
+    for module in (playground_module, decisions_module):
+        monkeypatch.setattr(module, "get_redis", lambda: redis)
+        monkeypatch.setattr(module, "load_or_create_signing_key", patched_key_loader)
 
     app = create_app()
     app.dependency_overrides[get_db_session] = override_get_db_session

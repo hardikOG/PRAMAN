@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { api, type Preset, type PlaygroundRunResponse, type Constraint, type Finding } from "../api";
+import {
+  api,
+  type Preset,
+  type PlaygroundRunResponse,
+  type Constraint,
+  type Finding,
+  type StepUpConfirmResponse,
+} from "../api";
 import { formatPaise, truncateHash } from "../format";
 import OutcomeBadge from "./OutcomeBadge";
 
@@ -33,6 +40,9 @@ export default function Playground() {
   const [result, setResult] = useState<PlaygroundRunResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [revealCount, setRevealCount] = useState(0);
+  const [confirming, setConfirming] = useState(false);
+  const [confirmResult, setConfirmResult] = useState<StepUpConfirmResponse | null>(null);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
 
   useEffect(() => {
     api.listPresets().then(setPresets).catch((e) => setError(String(e)));
@@ -43,6 +53,8 @@ export default function Playground() {
     setError(null);
     setResult(null);
     setRevealCount(0);
+    setConfirmResult(null);
+    setConfirmError(null);
     try {
       const response = await api.runPreset(selected);
       setResult(response);
@@ -55,6 +67,20 @@ export default function Playground() {
       setError(String(e));
     } finally {
       setRunning(false);
+    }
+  }
+
+  async function confirmStepUp() {
+    if (!result?.step_up_token) return;
+    setConfirming(true);
+    setConfirmError(null);
+    try {
+      const response = await api.confirmStepUp(result.step_up_token);
+      setConfirmResult(response);
+    } catch (e) {
+      setConfirmError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setConfirming(false);
     }
   }
 
@@ -180,10 +206,53 @@ export default function Playground() {
                 </div>
               )}
 
-              {result.step_up_token && (
+              {result.step_up_token && !confirmResult && (
                 <div className="mt-3 rounded border border-amber/40 bg-ink p-3">
                   <div className="font-heading text-xs font-semibold text-amber">STEP-UP TOKEN</div>
                   <div className="mt-1 font-mono text-xs text-muted">{result.step_up_token}</div>
+                  <p className="mt-2 text-xs text-muted">
+                    A human confirms this exact cart before payment executes — the original
+                    decision above never changes; confirming creates a new one.
+                  </p>
+                  <button
+                    onClick={confirmStepUp}
+                    disabled={confirming}
+                    className="mt-2 w-full rounded bg-amber px-3 py-1.5 font-heading text-xs font-semibold text-ink disabled:opacity-50"
+                  >
+                    {confirming ? "Confirming…" : "Confirm as human"}
+                  </button>
+                  {confirmError && (
+                    <p className="mt-2 text-xs text-stamp">{confirmError}</p>
+                  )}
+                </div>
+              )}
+
+              {confirmResult && (
+                <div className="mt-3 rounded border border-seal/40 bg-ink p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="font-heading text-xs font-semibold text-seal">
+                      HUMAN-CONFIRMED
+                    </span>
+                    <OutcomeBadge outcome={confirmResult.decision.outcome} />
+                  </div>
+                  <p className="mt-1 font-mono text-xs text-muted">
+                    {confirmResult.decision.reason_code}
+                  </p>
+                  <p className="mt-2 font-mono text-xs text-muted">
+                    {confirmResult.decision.razorpay_order_id} ·{" "}
+                    {confirmResult.decision.razorpay_payment_id}
+                  </p>
+                  <div className="mt-3 rounded border border-chain/40 bg-surface p-3">
+                    <div className="font-heading text-xs font-semibold text-chain">
+                      PROOF {truncateHash(confirmResult.proof_bundle.id, 6)}
+                    </div>
+                    <div className="mt-1 font-mono text-xs text-muted">
+                      hash {truncateHash(confirmResult.proof_bundle.payload_hash)}
+                    </div>
+                    <div className="font-mono text-xs text-muted">
+                      prev {truncateHash(confirmResult.proof_bundle.prev_hash)}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

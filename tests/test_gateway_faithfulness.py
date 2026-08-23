@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from apps.api.gateway.prompts.faithfulness import (
     UNTRUSTED_DATA_BEGIN,
     UNTRUSTED_DATA_END,
@@ -17,6 +18,7 @@ from apps.api.gateway.stage_faithfulness import (
     evaluate_faithfulness,
     identify_target_item,
 )
+from apps.api.llm_client import LLMError
 from apps.api.models.schemas import Cart, CartItem, Constraint, ConstraintType, Verdict
 
 from tests.fakes import FakeLLMClient
@@ -226,6 +228,23 @@ def test_malformed_llm_response_becomes_undetermined_not_a_crash() -> None:
     cart = _cart([_shoe("NR-A9", size="UK9", colour="Ash")])
     result = evaluate_faithfulness(cart, [_ATTRIBUTE_SIZE], fake, min_confidence=0.7)
     assert result.findings[0].verdict == Verdict.UNDETERMINED
+
+
+@pytest.mark.parametrize("exc", [LLMError("connection refused"), LLMError("request timed out")])
+def test_llm_unavailable_or_timeout_becomes_undetermined_never_allow(exc: Exception) -> None:
+    """The failure-recovery contract: an LLM outage must never silently
+    resolve to SATISFIED. `_evaluate_llm_constraint` catches `LLMError`
+    specifically (not just malformed JSON) and downgrades to UNDETERMINED,
+    which fuses to STEP_UP/BLOCK via S4's existing precedence — never ALLOW."""
+
+    def raise_unavailable(_system: str, _user: str) -> dict:
+        raise exc
+
+    fake = FakeLLMClient(raise_unavailable)
+    cart = _cart([_shoe("NR-A9", size="UK9", colour="Ash")])
+    result = evaluate_faithfulness(cart, [_ATTRIBUTE_SIZE], fake, min_confidence=0.7)
+    assert result.findings[0].verdict == Verdict.UNDETERMINED
+    assert "LLM adjudication failed" in result.findings[0].evidence
 
 
 def test_ambiguous_cart_produces_undetermined_llm_findings() -> None:

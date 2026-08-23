@@ -98,9 +98,16 @@ PRESETS: list[Preset] = [
     Preset(
         "silent_upsell",
         "Silent upsell",
-        "The right shoe, plus an unrequested sock pack.",
+        "The right shoe, plus an unrequested sock pack — small enough to auto-strip.",
         "kicks-co",
         [("NR-A9", 1), ("SP-BLK", 1)],
+    ),
+    Preset(
+        "large_upsell",
+        "Uncertain — needs a human",
+        "The right shoe, plus a bag worth 31% of the cart — too large to silently strip.",
+        "kicks-co",
+        [("ECHO-9", 1), ("TOTE-20", 1)],
     ),
     Preset(
         "merchant_substitution",

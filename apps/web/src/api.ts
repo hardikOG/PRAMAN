@@ -79,6 +79,15 @@ export interface PlaygroundRunResponse {
   llm_mode: "live" | "offline_demo";
 }
 
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -86,9 +95,14 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`${response.status} ${response.statusText}: ${body}`);
+    throw new ApiError(response.status, body || `${response.status} ${response.statusText}`);
   }
   return response.json() as Promise<T>;
+}
+
+export interface StepUpConfirmResponse {
+  decision: Decision;
+  proof_bundle: ProofBundle;
 }
 
 export interface AttackClassResult {
@@ -129,4 +143,9 @@ export const api = {
   getDecision: (id: string) => json<Decision>(`/decisions/${id}`),
   getProof: (id: string) => json<ProofBundle>(`/decisions/${id}/proof`),
   getEvalResults: () => json<EvalResults>("/eval/results"),
+  confirmStepUp: (token: string) =>
+    json<StepUpConfirmResponse>("/decisions/step-up/confirm", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    }),
 };

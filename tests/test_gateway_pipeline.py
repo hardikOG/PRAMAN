@@ -441,3 +441,60 @@ async def test_bundle_signature_verifies_against_the_correct_public_key_only(
     assert result.proof_bundle is not None
     assert verify_proof_bundle(result.proof_bundle, wrong_key.public_key()) is False
     assert verify_proof_bundle(result.proof_bundle, ledger_key.public_key()) is True
+
+
+async def test_decision_and_payment_survive_a_proof_bundle_save_failure(
+    session, redis, monkeypatch
+) -> None:
+    """There is no distributed transaction between Razorpay and this
+    database — `payment_executor.capture_payment` is a real, irreversible
+    external side effect this process cannot roll back. If persisting the
+    proof bundle afterward fails for any reason (a dropped DB connection,
+    disk full), the decision — with the real Razorpay order/payment ids
+    already on it — must still be found in the database: a bundle-less
+    ALLOW is a real, narrow, documented gap; a payment nobody's database has
+    any record of at all is a much worse one, and is what this regression
+    test guards against (see `gateway.pipeline.authorize`'s mid-function
+    `session.commit()`, added specifically for this)."""
+    principal_key = generate_signing_key()
+    ledger_key = generate_signing_key()
+    mandate = _mandate(principal_key)
+    await save_mandate(session, mandate)
+    cart = quote_to_cart(
+        cart_id=str(uuid.uuid4()),
+        mandate_id=mandate.id,
+        merchant_id="kicks-co",
+        quote_id="qte-1",
+        items=[_shoe_item()],
+        currency="INR",
+    )
+
+    def boom(*_args, **_kwargs):
+        raise ConnectionError("DB connection dropped while saving the proof bundle")
+
+    import apps.api.gateway.pipeline as pipeline_module
+
+    monkeypatch.setattr(pipeline_module, "save_proof_bundle", boom)
+
+    with pytest.raises(ConnectionError):
+        await authorize(
+            session=session,
+            redis=redis,
+            mandate=mandate,
+            cart=cart,
+            llm_client=_honest_llm(),
+            ledger_signing_key=ledger_key,
+            payment_executor=DeterministicExecutor(),
+            thresholds=_THRESHOLDS,
+        )
+
+    from apps.api.gateway.repository import get_decision, list_recent_decisions
+
+    persisted = await list_recent_decisions(session, limit=5)
+    assert len(persisted) == 1
+    row = await get_decision(session, persisted[0].id)
+    assert row is not None
+    assert row.outcome == "ALLOW"
+    assert row.razorpay_order_id is not None
+    assert row.razorpay_payment_id is not None
+    assert row.proof_bundle is None  # the one real, documented gap this leaves
