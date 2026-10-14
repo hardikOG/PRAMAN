@@ -47,6 +47,7 @@ export interface Decision {
   cart_id: string;
   outcome: "ALLOW" | "STEP_UP" | "BLOCK";
   reason_code: string;
+  plain_reason?: string;
   behaviour_score: number;
   behaviour_signals: string[];
   stripped_items: string[];
@@ -100,9 +101,32 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export type StepUpAction = "pay_all" | "remove_unrequested" | "cancel";
+
+export interface StepUpItemView {
+  sku: string;
+  name: string;
+  qty: number;
+  line_total_paise: number;
+  unrequested: boolean;
+}
+
+export interface StepUpContext {
+  decision_id: string;
+  intent_text: string;
+  headline: string;
+  detail: string;
+  items: StepUpItemView[];
+  total_paise: number;
+  unrequested_paise: number;
+  unrequested_percent: number;
+  can_remove: boolean;
+  expires_in_seconds: number;
+}
+
 export interface StepUpConfirmResponse {
   decision: Decision;
-  proof_bundle: ProofBundle;
+  proof_bundle: ProofBundle | null;
 }
 
 export interface AttackClassResult {
@@ -143,9 +167,11 @@ export const api = {
   getDecision: (id: string) => json<Decision>(`/decisions/${id}`),
   getProof: (id: string) => json<ProofBundle>(`/decisions/${id}/proof`),
   getEvalResults: () => json<EvalResults>("/eval/results"),
-  confirmStepUp: (token: string) =>
+  getStepUpContext: (token: string) =>
+    json<StepUpContext>(`/decisions/step-up/${encodeURIComponent(token)}`),
+  confirmStepUp: (token: string, action: StepUpAction = "pay_all") =>
     json<StepUpConfirmResponse>("/decisions/step-up/confirm", {
       method: "POST",
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ token, action }),
     }),
 };

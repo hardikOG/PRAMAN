@@ -170,7 +170,7 @@ injected string at all), which is a different claim from a live model
 that say something about Claude's actual behaviour; the harness and every
 number it produces are otherwise real.
 
-Test suite: 224 passed, 1 skipped (documented — an LLM-gated test with no
+Test suite: 246 passed, 1 skipped (documented — an LLM-gated test with no
 key configured). `ruff` and `mypy` clean. Gateway + ledger coverage: 95%.
 
 ## Console
@@ -186,13 +186,17 @@ key configured). `ruff` and `mypy` clean. Gateway + ledger coverage: 95%.
 Ninety-second walkthrough: [`docs/screenshots/playground_demo.gif`](docs/screenshots/playground_demo.gif).
 
 **A 3-minute live demo, in order:** in the Playground, run **Honest
-purchase** (S1/S2/S3 all clear → ALLOW → real captured payment → signed
-proof bundle), then **Cart substitution (size)** (S2 catches the wrong
-size → BLOCK, no payment, no proof-of-ALLOW to fabricate one with), then
-**"Uncertain — needs a human"** (an add-on worth 31% of the cart is too
-large to auto-strip → STEP_UP → click *Confirm as human* → a *new* ALLOW
-decision and proof bundle appear, the original STEP_UP entry directly above
-it untouched). One mandate, one intent, three outcomes, one proof chain.
+purchase** (S1/S2/S3 all clear → ALLOW → captured payment → signed proof
+bundle), then **Cart substitution (size)** (S2 catches the wrong size →
+BLOCK, no payment), then **"Uncertain — needs a human"**: an add-on worth 31%
+of the cart is too large to auto-strip, so the decision steps up and the
+panel shows the *real shopper page* in a phone frame — "Your agent added
+Canvas Tote you didn't ask for", with **Remove it & pay ₹2,199 / Keep it & pay
+₹3,198 / Cancel**. Tap one and a *new* decision (plus a new proof bundle, if
+money moved) appears below; the original STEP_UP stays untouched in the
+ledger. One mandate, one intent, three outcomes, one proof chain. The
+shopper's design rationale and the open research plan are in
+[`docs/ux/`](docs/ux/README.md).
 
 ## Repo layout
 

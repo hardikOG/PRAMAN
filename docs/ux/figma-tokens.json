@@ -1,0 +1,88 @@
+{
+  "console (engineer, dark)": {
+    "ink": {
+      "value": "#0B1220",
+      "type": "color"
+    },
+    "surface": {
+      "value": "#131C2E",
+      "type": "color"
+    },
+    "raised": {
+      "value": "#1A2540",
+      "type": "color"
+    },
+    "line": {
+      "value": "#22304A",
+      "type": "color"
+    },
+    "paper": {
+      "value": "#E8EDF5",
+      "type": "color"
+    },
+    "muted": {
+      "value": "#8095B3",
+      "type": "color"
+    },
+    "seal": {
+      "value": "#4CC2A6",
+      "type": "color"
+    },
+    "amber": {
+      "value": "#E8A33D",
+      "type": "color"
+    },
+    "stamp": {
+      "value": "#E0524D",
+      "type": "color"
+    },
+    "chain": {
+      "value": "#6C8CFF",
+      "type": "color"
+    }
+  },
+  "shopper (daylight)": {
+    "day": {
+      "value": "#F4F6FA",
+      "type": "color"
+    },
+    "card": {
+      "value": "#FFFFFF",
+      "type": "color"
+    },
+    "text": {
+      "value": "#0B1220",
+      "type": "color"
+    },
+    "muted": {
+      "value": "#4A5A75",
+      "type": "color"
+    },
+    "line": {
+      "value": "#D9E0EC",
+      "type": "color"
+    },
+    "amber-wash": {
+      "value": "#FFF4E0",
+      "type": "color"
+    },
+    "amber-line": {
+      "value": "#E8A33D",
+      "type": "color"
+    },
+    "seal": {
+      "value": "#0F7B63",
+      "type": "color"
+    },
+    "error": {
+      "value": "#B3261E",
+      "type": "color"
+    }
+  },
+  "$metadata": {
+    "tokenSetOrder": [
+      "console (engineer, dark)",
+      "shopper (daylight)"
+    ]
+  }
+}

@@ -5,7 +5,9 @@ import {
   type PlaygroundRunResponse,
   type Constraint,
   type Finding,
+  type StepUpAction,
   type StepUpConfirmResponse,
+  type StepUpContext,
 } from "../api";
 import { formatPaise, truncateHash } from "../format";
 import OutcomeBadge from "./OutcomeBadge";
@@ -40,9 +42,28 @@ export default function Playground() {
   const [result, setResult] = useState<PlaygroundRunResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [revealCount, setRevealCount] = useState(0);
-  const [confirming, setConfirming] = useState(false);
+  const [stepUpContext, setStepUpContext] = useState<StepUpContext | null>(null);
   const [confirmResult, setConfirmResult] = useState<StepUpConfirmResponse | null>(null);
-  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [confirmAction, setConfirmAction] = useState<StepUpAction | null>(null);
+
+  // The shopper's screen runs in an iframe (a real, separate page — the same
+  // one a shopper gets by link) and reports what they chose via postMessage.
+  useEffect(() => {
+    function onMessage(event: MessageEvent) {
+      if (event.origin !== window.location.origin) return;
+      const data = event.data as {
+        type?: string;
+        action?: StepUpAction;
+        result?: StepUpConfirmResponse;
+      };
+      if (data?.type === "praman:step-up-result" && data.result) {
+        setConfirmResult(data.result);
+        setConfirmAction(data.action ?? null);
+      }
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
   const [waking, setWaking] = useState(false);
 
   useEffect(() => {
@@ -75,10 +96,14 @@ export default function Playground() {
     setResult(null);
     setRevealCount(0);
     setConfirmResult(null);
-    setConfirmError(null);
+    setConfirmAction(null);
+    setStepUpContext(null);
     try {
       const response = await api.runPreset(selected);
       setResult(response);
+      if (response.step_up_token) {
+        api.getStepUpContext(response.step_up_token).then(setStepUpContext).catch(() => undefined);
+      }
       const stageCount = 4;
       for (let i = 1; i <= stageCount; i++) {
         await new Promise((r) => setTimeout(r, 220));
@@ -88,20 +113,6 @@ export default function Playground() {
       setError(String(e));
     } finally {
       setRunning(false);
-    }
-  }
-
-  async function confirmStepUp() {
-    if (!result?.step_up_token) return;
-    setConfirming(true);
-    setConfirmError(null);
-    try {
-      const response = await api.confirmStepUp(result.step_up_token);
-      setConfirmResult(response);
-    } catch (e) {
-      setConfirmError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setConfirming(false);
     }
   }
 
@@ -233,24 +244,36 @@ export default function Playground() {
                 </div>
               )}
 
-              {result.step_up_token && !confirmResult && (
+              {result.decision.outcome !== "ALLOW" && (
+                <p className="mt-2 text-sm text-paper">
+                  {stepUpContext?.headline ?? result.decision.plain_reason}
+                </p>
+              )}
+
+              {result.step_up_token && (
                 <div className="mt-3 rounded border border-amber/40 bg-ink p-3">
-                  <div className="font-heading text-xs font-semibold text-amber">STEP-UP TOKEN</div>
-                  <div className="mt-1 font-mono text-xs text-muted">{result.step_up_token}</div>
-                  <p className="mt-2 text-xs text-muted">
-                    A human confirms this exact cart before payment executes — the original
-                    decision above never changes; confirming creates a new one.
+                  <div className="font-heading text-xs font-semibold text-amber">
+                    WHAT THE SHOPPER SEES
+                  </div>
+                  <p className="mt-1 text-xs text-muted">
+                    This is the real confirmation page a shopper opens from their link — the
+                    original decision above never changes; whatever they choose becomes a new one.
                   </p>
-                  <button
-                    onClick={confirmStepUp}
-                    disabled={confirming}
-                    className="mt-2 w-full rounded bg-amber px-3 py-1.5 font-heading text-xs font-semibold text-ink disabled:opacity-50"
+                  <div className="mx-auto mt-3 w-[390px] max-w-full overflow-hidden rounded-[28px] border-4 border-line bg-day shadow-none">
+                    <iframe
+                      title="Shopper confirmation"
+                      src={`/?confirm=${encodeURIComponent(result.step_up_token)}`}
+                      className="block h-[720px] w-full border-0"
+                    />
+                  </div>
+                  <a
+                    href={`/?confirm=${encodeURIComponent(result.step_up_token)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-2 block text-center font-mono text-[11px] text-muted underline"
                   >
-                    {confirming ? "Confirming…" : "Confirm as human"}
-                  </button>
-                  {confirmError && (
-                    <p className="mt-2 text-xs text-stamp">{confirmError}</p>
-                  )}
+                    open on its own ↗
+                  </a>
                 </div>
               )}
 
@@ -258,28 +281,39 @@ export default function Playground() {
                 <div className="mt-3 rounded border border-seal/40 bg-ink p-3">
                   <div className="flex items-center justify-between">
                     <span className="font-heading text-xs font-semibold text-seal">
-                      HUMAN-CONFIRMED
+                      {confirmAction === "cancel" ? "SHOPPER DECLINED" : "SHOPPER CONFIRMED"}
                     </span>
                     <OutcomeBadge outcome={confirmResult.decision.outcome} />
                   </div>
                   <p className="mt-1 font-mono text-xs text-muted">
                     {confirmResult.decision.reason_code}
                   </p>
-                  <p className="mt-2 font-mono text-xs text-muted">
-                    {confirmResult.decision.razorpay_order_id} ·{" "}
-                    {confirmResult.decision.razorpay_payment_id}
-                  </p>
-                  <div className="mt-3 rounded border border-chain/40 bg-surface p-3">
-                    <div className="font-heading text-xs font-semibold text-chain">
-                      PROOF {truncateHash(confirmResult.proof_bundle.id, 6)}
+                  {confirmResult.decision.stripped_items.length > 0 && (
+                    <p className="mt-2 text-xs text-amber">
+                      removed before paying: {confirmResult.decision.stripped_items.join(", ")}
+                    </p>
+                  )}
+                  {confirmResult.decision.razorpay_order_id && (
+                    <p className="mt-2 font-mono text-xs text-muted">
+                      {confirmResult.decision.razorpay_order_id} ·{" "}
+                      {confirmResult.decision.razorpay_payment_id}
+                      {confirmResult.decision.razorpay_order_id.startsWith("order_det_") &&
+                        " (simulated — no Razorpay keys configured)"}
+                    </p>
+                  )}
+                  {confirmResult.proof_bundle && (
+                    <div className="mt-3 rounded border border-chain/40 bg-surface p-3">
+                      <div className="font-heading text-xs font-semibold text-chain">
+                        PROOF {truncateHash(confirmResult.proof_bundle.id, 6)}
+                      </div>
+                      <div className="mt-1 font-mono text-xs text-muted">
+                        hash {truncateHash(confirmResult.proof_bundle.payload_hash)}
+                      </div>
+                      <div className="font-mono text-xs text-muted">
+                        prev {truncateHash(confirmResult.proof_bundle.prev_hash)}
+                      </div>
                     </div>
-                    <div className="mt-1 font-mono text-xs text-muted">
-                      hash {truncateHash(confirmResult.proof_bundle.payload_hash)}
-                    </div>
-                    <div className="font-mono text-xs text-muted">
-                      prev {truncateHash(confirmResult.proof_bundle.prev_hash)}
-                    </div>
-                  </div>
+                  )}
                 </div>
               )}
             </div>

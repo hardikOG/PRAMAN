@@ -68,7 +68,12 @@ export default function Ledger() {
                 <td className="p-3 font-mono text-xs text-paper">
                   {d.cart ? formatPaise(d.cart.total_paise) : "—"}
                 </td>
-                <td className="p-3 text-xs text-muted">{d.reason_code}</td>
+                <td className="p-3 text-xs">
+                  <div className="text-paper">{d.plain_reason ?? d.reason_code}</div>
+                  <div className="mt-0.5 font-mono text-[10px] text-muted/70">
+                    {truncateCode(d.reason_code)}
+                  </div>
+                </td>
                 <td className="p-3">
                   <OutcomeBadge outcome={d.outcome} />
                 </td>
@@ -88,6 +93,12 @@ export default function Ledger() {
       {selectedId && <ProofInspector decisionId={selectedId} onClose={() => setSelectedId(null)} />}
     </div>
   );
+}
+
+// Raw reason codes can embed full UUIDs; keep them available for engineers
+// without letting them dominate the row.
+function truncateCode(code: string): string {
+  return code.replace(/([0-9a-f]{8})-[0-9a-f-]{27}/g, "$1…");
 }
 
 function StatTile({ label, value, colour }: { label: string; value: string | number; colour: string }) {

@@ -4,6 +4,8 @@ persisted decisions, carts, and proof bundles.
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,9 +13,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.config import get_settings
 from apps.api.db import get_db_session
 from apps.api.gateway import confirm_step_up
-from apps.api.gateway.repository import get_decision, list_recent_decisions
+from apps.api.gateway.explain import build_step_up_context, plain_reason
+from apps.api.gateway.pipeline import StepUpAction
+from apps.api.gateway.repository import (
+    cart_from_row,
+    findings_from_rows,
+    get_decision,
+    list_recent_decisions,
+)
+from apps.api.gateway.step_up import peek_step_up_token
 from apps.api.ledger.crypto import load_or_create_signing_key
 from apps.api.ledger.repository import get_proof_bundle_by_decision
+from apps.api.mandates.service import fetch_mandate
 from apps.api.models.tables import CartRow, DecisionRow
 from apps.api.payments import get_payment_executor
 from apps.api.redis_client import get_redis
@@ -48,6 +59,7 @@ def _serialize_decision(decision: DecisionRow) -> dict:
         "cart_id": decision.cart_id,
         "outcome": decision.outcome,
         "reason_code": decision.reason_code,
+        "plain_reason": plain_reason(decision.reason_code, findings_from_rows(decision.findings)),
         "behaviour_score": decision.behaviour_score,
         "behaviour_signals": decision.behaviour_signals,
         "stripped_items": decision.stripped_items,
@@ -78,6 +90,35 @@ async def list_decisions(
     return [_serialize_decision(row) for row in rows]
 
 
+@router.get("/step-up/{token}")
+async def get_step_up_context(
+    token: str, session: AsyncSession = Depends(get_db_session)
+) -> dict:
+    """What a shopper is being asked to confirm, in plain language — read-only.
+
+    Does not spend the token (see `peek_step_up_token`); the link can be
+    opened, read, and closed any number of times until one of the three
+    actions in `POST /decisions/step-up/confirm` is taken or it expires.
+    """
+    peeked = await peek_step_up_token(get_redis(), token)
+    if peeked is None:
+        raise HTTPException(status_code=404, detail="this link has expired or was already used")
+    decision_id, seconds_left = peeked
+    row = await get_decision(session, decision_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="decision not found")
+    cart = cart_from_row(row.cart)
+    mandate = await fetch_mandate(session, cart.mandate_id)
+    context = build_step_up_context(
+        decision_id=row.id,
+        reason_code=row.reason_code,
+        cart=cart,
+        intent_text=mandate.intent_text if mandate else "",
+        expires_in_seconds=seconds_left,
+    )
+    return asdict(context)
+
+
 @router.get("/{decision_id}")
 async def get_decision_detail(
     decision_id: str, session: AsyncSession = Depends(get_db_session)
@@ -105,6 +146,7 @@ async def get_decision_proof(
 
 class StepUpConfirmRequest(BaseModel):
     token: str
+    action: StepUpAction = "pay_all"
 
 
 @router.post("/step-up/confirm")
@@ -126,11 +168,14 @@ async def confirm_step_up_route(
         token=body.token,
         ledger_signing_key=load_or_create_signing_key(settings.ledger_signing_key_path),
         payment_executor=get_payment_executor(),
+        action=body.action,
     )
     if not result.ok:
         raise HTTPException(status_code=409, detail=result.reason)
-    assert result.decision is not None and result.proof_bundle is not None
+    assert result.decision is not None
     return {
         "decision": result.decision.model_dump(mode="json"),
-        "proof_bundle": result.proof_bundle.model_dump(mode="json"),
+        "proof_bundle": (
+            result.proof_bundle.model_dump(mode="json") if result.proof_bundle else None
+        ),
     }

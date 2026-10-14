@@ -2,6 +2,7 @@ import { useState } from "react";
 import Playground from "./components/Playground";
 import Ledger from "./components/Ledger";
 import RedTeam from "./components/RedTeam";
+import ShopperConfirm from "./components/ShopperConfirm";
 
 type Tab = "playground" | "ledger" | "redteam";
 
@@ -13,6 +14,11 @@ const TABS: { key: Tab; label: string }[] = [
 
 export default function App(): JSX.Element {
   const [tab, setTab] = useState<Tab>("playground");
+
+  // A shopper opening their one-time confirmation link sees only that screen
+  // — none of the engineer console around it.
+  const confirmToken = new URLSearchParams(window.location.search).get("confirm");
+  if (confirmToken) return <ShopperConfirm token={confirmToken} />;
 
   return (
     <div className="min-h-screen bg-ink text-paper">

@@ -42,6 +42,11 @@ export default function ProofInspector({
 
         {decision && (
           <div className="space-y-4 text-sm">
+            {decision.plain_reason && (
+              <p className="rounded border border-line bg-ink p-3 text-paper">
+                {decision.plain_reason}
+              </p>
+            )}
             <Section title="CART">
               {decision.cart?.items.map((item) => (
                 <div key={item.sku} className="flex justify-between border-b border-line py-1.5 last:border-0">

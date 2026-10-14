@@ -27,6 +27,22 @@ async def issue_step_up_token(redis: Redis, decision_id: str, *, ttl_seconds: in
     return token
 
 
+async def peek_step_up_token(redis: Redis, token: str) -> tuple[str, int] | None:
+    """Read a step-up token without consuming it: returns `(decision_id,
+    seconds_remaining)`, or `None` if it doesn't exist or has expired.
+
+    Exists so a shopper-facing screen can show *what* is being confirmed
+    before anything irreversible happens — redemption (`GETDEL`) stays the
+    single point where a token is spent, so peeking can never let one be
+    used twice. Complexity: O(1), two Redis round trips.
+    """
+    key = _token_key(token)
+    decision_id = await redis.get(key)
+    if decision_id is None:
+        return None
+    return decision_id, max(int(await redis.ttl(key)), 0)
+
+
 async def redeem_step_up_token(redis: Redis, token: str) -> str | None:
     """Atomically fetch and delete a step-up token, returning the decision
     id it confirmed, or `None` if the token doesn't exist or already expired.

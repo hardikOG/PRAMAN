@@ -18,6 +18,18 @@ const config: Config = {
         amber: "#E8A33D",
         stamp: "#E0524D",
         chain: "#6C8CFF",
+        // Shopper-facing "daylight" surface: same semantic hues (seal/amber/
+        // stamp) on a light, high-contrast ground, because the person
+        // confirming a purchase is on a phone in daylight, not an engineer
+        // at a desk — see src/components/ShopperConfirm.tsx.
+        day: "#F4F6FA",
+        daycard: "#FFFFFF",
+        daytext: "#0B1220",
+        daymuted: "#4A5A75",
+        dayline: "#D9E0EC",
+        dayamber: "#FFF4E0",
+        dayamberline: "#E8A33D",
+        dayseal: "#0F7B63",
       },
       fontFamily: {
         heading: ["Archivo", "sans-serif"],

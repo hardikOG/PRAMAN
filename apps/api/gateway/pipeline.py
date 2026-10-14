@@ -13,13 +13,14 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Literal, Protocol
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.gateway.behaviour_events import cart_signature, record_agent_event
+from apps.api.gateway.explain import unrequested_skus_from_reason
 from apps.api.gateway.policy import fuse_decision
 from apps.api.gateway.repository import (
     cart_from_row,
@@ -31,7 +32,11 @@ from apps.api.gateway.repository import (
 from apps.api.gateway.stage_behaviour import BehaviourResult, evaluate_behaviour
 from apps.api.gateway.stage_faithfulness import FaithfulnessResult, evaluate_faithfulness
 from apps.api.gateway.stage_mandate import evaluate_mandate
-from apps.api.gateway.step_up import issue_step_up_token, redeem_step_up_token
+from apps.api.gateway.step_up import (
+    issue_step_up_token,
+    peek_step_up_token,
+    redeem_step_up_token,
+)
 from apps.api.ledger.bundle import build_proof_bundle
 from apps.api.ledger.repository import get_latest_payload_hash, save_proof_bundle
 from apps.api.llm_client import LLMClient
@@ -101,6 +106,11 @@ class AuthorizationResult:
     decision: Decision
     proof_bundle: ProofBundle | None
     step_up_token: str | None
+
+
+StepUpAction = Literal["pay_all", "remove_unrequested", "cancel"]
+"""What the shopper chose: pay for the cart as-is, pay with the unrequested
+add-on removed, or decline the purchase outright."""
 
 
 @dataclass(frozen=True)
@@ -347,6 +357,7 @@ async def confirm_step_up(
     token: str,
     ledger_signing_key: Ed25519PrivateKey,
     payment_executor: PaymentExecutor,
+    action: StepUpAction = "pay_all",
 ) -> ConfirmStepUpResult:
     """Redeem a human's confirmation of a STEP_UP decision: capture payment
     for the originally-flagged cart and emit a *new* ALLOW decision plus a
@@ -369,9 +380,16 @@ async def confirm_step_up(
         not crashed. Propagates whatever the payment executor raises on
         capture failure, same as `authorize()`.
     """
-    decision_id = await redeem_step_up_token(redis, token)
-    if decision_id is None:
+    # Peek first, spend the token last: every check that can reject this
+    # request (unknown decision, wrong state, an action that doesn't apply)
+    # runs while the token is still intact, so a malformed request never burns
+    # a shopper's one-time link. `redeem_step_up_token`'s atomic GETDEL below
+    # is still the only place the token is spent — if two requests race past
+    # the peek, exactly one wins the redemption and the other is rejected.
+    peeked = await peek_step_up_token(redis, token)
+    if peeked is None:
         return ConfirmStepUpResult(ok=False, reason="invalid_or_expired_token")
+    decision_id, _seconds_left = peeked
 
     original = await get_decision(session, decision_id)
     if original is None:
@@ -379,14 +397,43 @@ async def confirm_step_up(
     if original.outcome != DecisionOutcome.STEP_UP.value:
         return ConfirmStepUpResult(ok=False, reason="decision_is_not_step_up")
 
+    removed_skus: list[str] = []
+    if action == "remove_unrequested":
+        removed_skus = unrequested_skus_from_reason(original.reason_code)
+        if not removed_skus:
+            return ConfirmStepUpResult(ok=False, reason="nothing_to_remove")
+
     cart = cart_from_row(original.cart)
     mandate = await fetch_mandate(session, cart.mandate_id)
-    if mandate is None:
+    if action != "cancel" and mandate is None:
         return ConfirmStepUpResult(ok=False, reason="mandate_not_found")
 
-    stripped_value = sum(
-        i.line_total_paise for i in cart.items if i.sku in original.stripped_items
-    )
+    if await redeem_step_up_token(redis, token) is None:
+        return ConfirmStepUpResult(ok=False, reason="invalid_or_expired_token")
+
+    findings = findings_from_rows(original.findings)
+
+    if action == "cancel":
+        # A human saying no is evidence too: record it as its own decision
+        # (the original STEP_UP row is, as ever, left alone) so a dispute can
+        # show the purchase was offered and declined, not silently dropped.
+        declined = Decision(
+            id=str(uuid.uuid4()),
+            cart_id=original.cart_id,
+            outcome=DecisionOutcome.BLOCK,
+            reason_code=f"step_up_declined:{original.id}",
+            findings=findings,
+            behaviour_score=original.behaviour_score,
+            behaviour_signals=original.behaviour_signals,
+            stripped_items=[],
+            stage_latencies_ms={},
+        )
+        await save_decision(session, declined)
+        return ConfirmStepUpResult(ok=True, reason="declined", decision=declined)
+
+    assert mandate is not None  # non-cancel actions returned above if it was missing
+    stripped_skus = [*original.stripped_items, *removed_skus]
+    stripped_value = sum(i.line_total_paise for i in cart.items if i.sku in stripped_skus)
     payable_amount = cart.total_paise - stripped_value
 
     order = await payment_executor.create_order(
@@ -396,7 +443,6 @@ async def confirm_step_up(
         order_id=order.order_id, amount_paise=payable_amount
     )
 
-    findings = findings_from_rows(original.findings)
     new_decision = Decision(
         id=str(uuid.uuid4()),
         cart_id=cart.id,
@@ -405,7 +451,7 @@ async def confirm_step_up(
         findings=findings,
         behaviour_score=original.behaviour_score,
         behaviour_signals=original.behaviour_signals,
-        stripped_items=original.stripped_items,
+        stripped_items=stripped_skus,
         stage_latencies_ms={},
         razorpay_order_id=order.order_id,
         razorpay_payment_id=payment.payment_id,
